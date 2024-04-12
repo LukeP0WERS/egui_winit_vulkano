@@ -286,10 +286,9 @@ impl Renderer {
     pub fn register_image(
         &mut self,
         image: Arc<ImageView>,
-        sampler_create_info: SamplerCreateInfo,
+        sampler: Arc<Sampler>,
     ) -> egui::TextureId {
         let layout = self.pipeline.layout().set_layouts().first().unwrap();
-        let sampler = Sampler::new(self.gfx_queue.device().clone(), sampler_create_info).unwrap();
         let desc_set = self.sampled_image_desc_set(layout, image.clone(), sampler);
         let id = egui::TextureId::User(self.next_native_tex_id);
         self.next_native_tex_id += 1;
