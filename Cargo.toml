@@ -18,14 +18,14 @@ clipboard = ["egui-winit/clipboard"]
 
 [dependencies]
 ahash = "0.8"
-egui-winit = "0.28"
-egui = "0.28"
+egui-winit = "0.30"
+egui = "0.30"
 image = "0.25"
-winit = "0.29"
-vulkano = { git = "https://github.com/LukeP0WERS/vulkano", branch = "fake_bug_fix" }
-vulkano-shaders = { git = "https://github.com/LukeP0WERS/vulkano", branch = "fake_bug_fix" , features = ["shaderc-debug"] }
+winit = "0.30"
+vulkano = { git = "https://github.com/vulkano-rs/vulkano.git" }
+vulkano-shaders = { git = "https://github.com/vulkano-rs/vulkano.git", features = ["shaderc-debug"] }
 
 [dev-dependencies]
 cgmath = "0.18.0"
-egui_demo_lib = "0.27"
-vulkano-util = { git = "https://github.com/LukeP0WERS/vulkano", branch = "fake_bug_fix" }
+egui_demo_lib = "0.30"
+vulkano-util = { git = "https://github.com/vulkano-rs/vulkano.git" }
