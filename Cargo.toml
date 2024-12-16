@@ -12,20 +12,22 @@ categories = ["gui", "game-development"]
 keywords = ["gui", "imgui", "immediate", "portable", "gamedev"]
 
 [features]
-default = ["clipboard", "links"]
+default = ["clipboard", "links", "wayland", "x11", "image"]
 links = ["egui-winit/links"]
 clipboard = ["egui-winit/clipboard"]
+wayland = ["winit/wayland", "winit/wayland-dlopen", "egui-winit/wayland"]
+x11 = ["winit/x11", "egui-winit/x11"]
 
 [dependencies]
 ahash = "0.8"
-egui-winit = "0.30"
-egui = "0.30"
-image = "0.25"
-winit = "0.30"
+egui-winit = { version = "0.29", default-features = false }
+egui = "0.29"
+image = { version = "0.25", optional = true }
+winit = { version = "0.30", default-features = false, features = [ "rwh_06" ] }
 vulkano = { git = "https://github.com/vulkano-rs/vulkano.git" }
 vulkano-shaders = { git = "https://github.com/vulkano-rs/vulkano.git", features = ["shaderc-debug"] }
 
 [dev-dependencies]
 cgmath = "0.18.0"
-egui_demo_lib = "0.30"
+egui_demo_lib = "0.29.1"
 vulkano-util = { git = "https://github.com/vulkano-rs/vulkano.git" }

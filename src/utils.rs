@@ -9,13 +9,14 @@
 
 use std::sync::Arc;
 
+#[cfg(feature = "image")]
 use image::RgbaImage;
 use vulkano::{
     buffer::{AllocateBufferError, Buffer, BufferCreateInfo, BufferUsage},
     command_buffer::{
         allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
-        CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsage, CopyBufferToImageInfo,
-        RecordingCommandBuffer,
+        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferToImageInfo,
+        PrimaryCommandBufferAbstract,
     },
     descriptor_set::allocator::StandardDescriptorSetAllocator,
     device::{Device, Queue},
@@ -39,11 +40,10 @@ pub fn immutable_texture_from_bytes(
     dimensions: [u32; 2],
     format: vulkano::format::Format,
 ) -> Result<Arc<ImageView>, ImageCreationError> {
-    let mut cbb = RecordingCommandBuffer::new(
+    let mut cbb = AutoCommandBufferBuilder::primary(
         allocators.command_buffer.clone(),
         queue.queue_family_index(),
-        CommandBufferLevel::Primary,
-        CommandBufferBeginInfo { usage: CommandBufferUsage::OneTimeSubmit, ..Default::default() },
+        CommandBufferUsage::OneTimeSubmit,
     )
     .map_err(ImageCreationError::Vulkan)?;
 
@@ -78,11 +78,12 @@ pub fn immutable_texture_from_bytes(
     ))
     .map_err(ImageCreationError::Validation)?;
 
-    let _fut = cbb.end().unwrap().execute(queue).unwrap();
+    let _fut = cbb.build().unwrap().execute(queue).unwrap();
 
     Ok(ImageView::new_default(texture).unwrap())
 }
 
+#[cfg(feature = "image")]
 pub fn immutable_texture_from_file(
     allocators: &Allocators,
     queue: Arc<Queue>,
