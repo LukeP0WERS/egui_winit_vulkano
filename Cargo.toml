@@ -24,10 +24,10 @@ egui-winit = { version = "0.29", default-features = false }
 egui = "0.29"
 image = { version = "0.25", optional = true }
 winit = { version = "0.30", default-features = false, features = [ "rwh_06" ] }
-vulkano = { git = "https://github.com/vulkano-rs/vulkano.git" }
-vulkano-shaders = { git = "https://github.com/vulkano-rs/vulkano.git", features = ["shaderc-debug"] }
+vulkano = { git = "https://github.com/vulkano-rs/vulkano.git", branch = "master" }
+vulkano-shaders = { git = "https://github.com/vulkano-rs/vulkano.git", branch = "master", features = ["shaderc-debug"] }
 
 [dev-dependencies]
 cgmath = "0.18.0"
 egui_demo_lib = "0.29.1"
-vulkano-util = { git = "https://github.com/vulkano-rs/vulkano.git" }
+vulkano-util = { git = "https://github.com/vulkano-rs/vulkano.git", branch = "master" }
