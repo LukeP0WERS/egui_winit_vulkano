@@ -127,7 +127,11 @@ impl FrameSystem {
         let mut command_buffer_builder = AutoCommandBufferBuilder::primary(
             self.allocators.command_buffers.clone(),
             self.gfx_queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
+            CommandBufferLevel::Primary,
+            CommandBufferBeginInfo {
+                usage: CommandBufferUsage::OneTimeSubmit,
+                ..Default::default()
+            },
         )
         .unwrap();
         command_buffer_builder
@@ -149,6 +153,7 @@ impl FrameSystem {
             framebuffer,
             num_pass: 0,
             recording_command_buffer: Some(command_buffer_builder),
+            recording_command_buffer: Some(command_buffer_builder),
             world_to_framebuffer,
         }
     }
@@ -167,13 +172,16 @@ pub struct Frame<'a> {
 impl<'a> Frame<'a> {
     pub fn next_pass<'f>(&'f mut self) -> Option<Pass<'f, 'a>> {
         let current_pass = {
+        let current_pass = {
             let current_pass = self.num_pass;
             self.num_pass += 1;
             current_pass
         };
         match current_pass {
+        match current_pass {
             0 => Some(Pass::Deferred(DrawPass { frame: self })),
             1 => {
+                self.recording_command_buffer
                 self.recording_command_buffer
                     .as_mut()
                     .unwrap()
@@ -206,6 +214,7 @@ impl<'f, 's: 'f> DrawPass<'f, 's> {
     #[inline]
     pub fn execute(&mut self, command_buffer: Arc<SecondaryAutoCommandBuffer>) {
         self.frame
+            .recording_command_buffer
             .recording_command_buffer
             .as_mut()
             .unwrap()

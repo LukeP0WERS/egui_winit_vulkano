@@ -16,8 +16,8 @@ use std::sync::Arc;
 use vulkano::{
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
-        allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder,
-        CommandBufferInheritanceInfo, CommandBufferUsage, SecondaryAutoCommandBuffer,
+        allocator::StandardCommandBufferAllocator, CommandBuffer, CommandBufferBeginInfo,
+        CommandBufferInheritanceInfo, RecordingCommandBuffer,
     },
     device::Queue,
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter},
@@ -81,6 +81,7 @@ impl TriangleDrawSystem {
                 .unwrap();
 
             let vertex_input_state = MyVertex::per_vertex().definition(&vs).unwrap();
+            let vertex_input_state = MyVertex::per_vertex().definition(&vs).unwrap();
 
             let stages =
                 [PipelineShaderStageCreateInfo::new(vs), PipelineShaderStageCreateInfo::new(fs)];
@@ -125,9 +126,12 @@ impl TriangleDrawSystem {
         let mut builder = AutoCommandBufferBuilder::secondary(
             self.command_buffer_allocator.clone(),
             self.gfx_queue.queue_family_index(),
-            CommandBufferUsage::MultipleSubmit,
-            CommandBufferInheritanceInfo {
-                render_pass: Some(self.subpass.clone().into()),
+            vulkano::command_buffer::CommandBufferLevel::Secondary,
+            CommandBufferBeginInfo {
+                inheritance_info: Some(CommandBufferInheritanceInfo {
+                    render_pass: Some(self.subpass.clone().into()),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
         )

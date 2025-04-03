@@ -17,8 +17,9 @@ use vulkano::{
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
         allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
-        AutoCommandBufferBuilder, CommandBufferInheritanceInfo, CommandBufferUsage,
-        RenderPassBeginInfo, SubpassBeginInfo, SubpassContents,
+        CommandBufferBeginInfo, CommandBufferInheritanceInfo, CommandBufferLevel,
+        CommandBufferUsage, RecordingCommandBuffer, RenderPassBeginInfo, SubpassBeginInfo,
+        SubpassContents,
     },
     device::{Device, Queue},
     format::Format,
@@ -192,6 +193,7 @@ struct SimpleGuiPipeline {
     subpass: Subpass,
     vertex_buffer: Subbuffer<[MyVertex]>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
 }
 
 impl SimpleGuiPipeline {
@@ -227,6 +229,8 @@ impl SimpleGuiPipeline {
                 secondary_buffer_count: 32,
                 ..Default::default()
             },
+        )
+        .into();
         )
         .into();
 
@@ -269,6 +273,7 @@ impl SimpleGuiPipeline {
             .entry_point("main")
             .unwrap();
 
+        let vertex_input_state = MyVertex::per_vertex().definition(&vs).unwrap();
         let vertex_input_state = MyVertex::per_vertex().definition(&vs).unwrap();
 
         let stages =
@@ -313,7 +318,11 @@ impl SimpleGuiPipeline {
         let mut builder = AutoCommandBufferBuilder::primary(
             self.command_buffer_allocator.clone(),
             self.queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
+            CommandBufferLevel::Primary,
+            CommandBufferBeginInfo {
+                usage: CommandBufferUsage::OneTimeSubmit,
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -342,9 +351,12 @@ impl SimpleGuiPipeline {
         let mut secondary_builder = AutoCommandBufferBuilder::secondary(
             self.command_buffer_allocator.clone(),
             self.queue.queue_family_index(),
-            CommandBufferUsage::MultipleSubmit,
-            CommandBufferInheritanceInfo {
-                render_pass: Some(self.subpass.clone().into()),
+            CommandBufferLevel::Secondary,
+            CommandBufferBeginInfo {
+                inheritance_info: Some(CommandBufferInheritanceInfo {
+                    render_pass: Some(self.subpass.clone().into()),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
         )
@@ -384,7 +396,7 @@ impl SimpleGuiPipeline {
 
         // Last end render pass
         builder.end_render_pass(Default::default()).unwrap();
-        let command_buffer = builder.build().unwrap();
+        let command_buffer = builder.end().unwrap();
         let after_future = before_future.then_execute(self.queue.clone(), command_buffer).unwrap();
 
         after_future.boxed()

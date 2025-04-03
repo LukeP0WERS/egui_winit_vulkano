@@ -118,14 +118,16 @@ impl ApplicationHandler for App {
                                 Sense::click(),
                             );
 
-                            // Render the scene in the allocated space
-                            let paint_callback = PaintCallback {
-                                rect,
-                                callback: Arc::new(CallbackFn::new(move |info, context| {
-                                    let mut scene = scene.lock();
-                                    scene.render(info, context);
-                                })),
-                            };
+                                            // Render the scene in the allocated space
+                                            let paint_callback = PaintCallback {
+                                                rect,
+                                                callback: Arc::new(CallbackFn::new(
+                                                    move |info, context| {
+                                                        let mut scene = scene.lock();
+                                                        scene.render(info, context);
+                                                    },
+                                                )),
+                                            };
 
                             ui.painter().add(paint_callback);
                         });
@@ -201,6 +203,7 @@ impl Scene {
             .unwrap();
 
         let vertex_input_state = MyVertex::per_vertex().definition(&vs).unwrap();
+        let vertex_input_state = MyVertex::per_vertex().definition(&vs).unwrap();
 
         let stages =
             [PipelineShaderStageCreateInfo::new(vs), PipelineShaderStageCreateInfo::new(fs)];
@@ -246,6 +249,9 @@ impl Scene {
             .unwrap()
             .bind_vertex_buffers(0, self.vertex_buffer.clone())
             .unwrap();
+        unsafe {
+            context.builder.draw(self.vertex_buffer.len() as u32, 1, 0, 0).unwrap();
+        }
         unsafe {
             context.builder.draw(self.vertex_buffer.len() as u32, 1, 0, 0).unwrap();
         }
