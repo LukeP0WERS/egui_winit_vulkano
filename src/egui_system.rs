@@ -46,7 +46,7 @@ use vulkano::{
 use vulkano_taskgraph::{
     command_buffer::{BufferImageCopy, CopyBufferToImageInfo, RecordingCommandBuffer},
     descriptor_set::{SampledImageId, SamplerId},
-    graph::{ExecutableTaskGraph, NodeId, TaskGraph},
+    graph::{AttachmentInfo, ExecutableTaskGraph, NodeId, TaskGraph},
     resource::{AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources},
     Id, QueueFamilyType, Task, TaskContext, TaskResult,
 };
@@ -205,6 +205,82 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
             _marker: PhantomData,
         }
+    }
+
+    /// Creates RenderEguiTask and adds it to task graph for rendering
+    pub fn render_egui(
+        &mut self,
+        task_graph: &mut TaskGraph<W>,
+        virtual_swapchain_id: Id<Swapchain>,
+        virtual_framebuffer_id: Id<Framebuffer>,
+    ) -> NodeId {
+        // Initialize RenderEguiTask
+        let node_id = task_graph
+            .create_task_node(
+                "Render Egui",
+                QueueFamilyType::Graphics,
+                RenderEguiTask::new(),
+            )
+            .framebuffer(virtual_framebuffer_id)
+            .color_attachment(
+                virtual_swapchain_id.current_image_id(),
+                AccessTypes::COLOR_ATTACHMENT_WRITE | AccessTypes::COLOR_ATTACHMENT_READ,
+                ImageLayoutType::Optimal,
+                &AttachmentInfo {
+                    ..Default::default()
+                },
+            )
+            .build();
+
+        self.egui_node_id = Some(node_id);
+
+        node_id
+    }
+
+    /// Extracts the draw data for the frame, updates textures, and sends mesh primitive data required for rendering
+    /// to [RenderEguiTask].
+    pub fn update_task_draw_data(&mut self, task_graph: &mut ExecutableTaskGraph<W>) {
+        let (clipped_meshes, textures_delta) = self.extract_draw_data_at_frame_end();
+
+        self.update_textures(&textures_delta.set);
+
+        for &id in &textures_delta.free {
+            self.unregister_image(id);
+        }
+
+        let node_id = self.get_node_id();
+
+        let egui_node = task_graph.task_node_mut(node_id).unwrap();
+        egui_node
+            .task_mut()
+            .downcast_mut::<RenderEguiTask<W>>()
+            .unwrap()
+            .set_clipped_meshes(clipped_meshes);
+    }
+
+    /// Creates the graphics pipeline for the task node, this **must** be called after taskgraph construction.
+    pub fn create_task_pipeline(
+        &mut self,
+        task_graph: &mut ExecutableTaskGraph<W>,
+        resources: &Arc<Resources>,
+        device: &Arc<Device>,
+    ) {
+        let node_id = self.get_node_id();
+
+        let egui_node = task_graph.task_node_mut(node_id).unwrap();
+        let subpass = egui_node.subpass().unwrap().clone();
+        egui_node
+            .task_mut()
+            .downcast_mut::<RenderEguiTask<W>>()
+            .unwrap()
+            .create_pipeline(resources, device, &subpass);
+    }
+
+    fn get_node_id(&self) -> NodeId {
+        self.egui_node_id.expect(
+            "RenderEguiTask must be initialized by calling render_egui during task graph \
+             construction.",
+        )
     }
 
     /// Registers a user texture. User texture needs to be unregistered when it is no longer needed
@@ -568,52 +644,6 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         self.egui_ctx.clone()
     }
 
-    /// Extracts the draw data for the frame, updates textures, and sends mesh primitive data required for rendering
-    /// to [RenderEguiTask].
-    pub fn update_task_draw_data(&mut self, task_graph: &mut ExecutableTaskGraph<W>) {
-        let (clipped_meshes, textures_delta) = self.extract_draw_data_at_frame_end();
-
-        self.update_textures(&textures_delta.set);
-
-        for &id in &textures_delta.free {
-            self.unregister_image(id);
-        }
-
-        let node_id = self.get_node_id();
-
-        let egui_node = task_graph.task_node_mut(node_id).unwrap();
-        egui_node
-            .task_mut()
-            .downcast_mut::<RenderEguiTask<W>>()
-            .unwrap()
-            .set_clipped_meshes(clipped_meshes);
-    }
-
-    /// Creates the graphics pipeline for the task node, this **must** be called after taskgraph construction.
-    pub fn create_task_pipeline(
-        &mut self,
-        task_graph: &mut ExecutableTaskGraph<W>,
-        resources: &Arc<Resources>,
-        device: &Arc<Device>,
-    ) {
-        let node_id = self.get_node_id();
-
-        let egui_node = task_graph.task_node_mut(node_id).unwrap();
-        let subpass = egui_node.subpass().unwrap().clone();
-        egui_node
-            .task_mut()
-            .downcast_mut::<RenderEguiTask<W>>()
-            .unwrap()
-            .create_pipeline(resources, device, &subpass);
-    }
-
-    fn get_node_id(&self) -> NodeId {
-        self.egui_node_id.expect(
-            "RenderEguiTask must be initialized by calling render_egui during task graph \
-             construction.",
-        )
-    }
-
     fn extract_draw_data_at_frame_end(&mut self) -> (Vec<ClippedPrimitive>, TexturesDelta) {
         self.end_frame();
         let shapes = std::mem::take(&mut self.shapes);
@@ -711,33 +741,6 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         }
 
         Some((vertices, indices))
-    }
-
-    /// Creates RenderEguiTask and adds it to task graph for rendering
-    pub fn render_egui(
-        &mut self,
-        task_graph: &mut TaskGraph<W>,
-        virtual_swapchain_id: Id<Swapchain>,
-        virtual_framebuffer_id: Id<Framebuffer>,
-    ) -> NodeId {
-        // Initialize RenderEguiTask
-        let node_id = task_graph
-            .create_task_node(
-                "Render Egui",
-                QueueFamilyType::Graphics,
-                RenderEguiTask::new(),
-            )
-            .framebuffer(virtual_framebuffer_id)
-            .image_access(
-                virtual_swapchain_id.current_image_id(),
-                AccessTypes::COLOR_ATTACHMENT_WRITE | AccessTypes::COLOR_ATTACHMENT_READ,
-                ImageLayoutType::Optimal,
-            )
-            .build();
-
-        self.egui_node_id = Some(node_id);
-
-        node_id
     }
 }
 
