@@ -15,7 +15,6 @@ use vulkano::{
         allocator::{SubbufferAllocator, SubbufferAllocatorCreateInfo},
         Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer,
     },
-    command_buffer::RenderPassBeginInfo,
     device::{Device, Queue},
     format::{Format, NumericFormat},
     image::{
@@ -40,7 +39,7 @@ use vulkano::{
         },
         DynamicState, GraphicsPipeline, Pipeline, PipelineShaderStageCreateInfo,
     },
-    render_pass::{Framebuffer, RenderPass, Subpass},
+    render_pass::{Framebuffer, Subpass},
     swapchain::{Surface, Swapchain},
     DeviceSize, NonZeroDeviceSize,
 };
@@ -86,7 +85,6 @@ pub struct EguiVertex {
 /// Your task graph's world type needs to implement this to expose data
 /// needed during [RenderEguiTask] execution.
 pub trait RenderEguiWorld<W: 'static + RenderEguiWorld<W> + ?Sized> {
-    fn get_framebuffers(&self) -> &Vec<Arc<Framebuffer>>;
     fn get_egui_system(&self) -> &EguiSystem<W>;
     fn get_swapchain_id(&self) -> Id<Swapchain>;
 }
@@ -581,10 +579,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             self.unregister_image(id);
         }
 
-        let node_id = self.egui_node_id.expect(
-            "RenderEguiTask must be initialized by calling render_egui during task graph \
-             construction.",
-        );
+        let node_id = self.get_node_id();
 
         let egui_node = task_graph.task_node_mut(node_id).unwrap();
         egui_node
@@ -592,6 +587,31 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             .downcast_mut::<RenderEguiTask<W>>()
             .unwrap()
             .set_clipped_meshes(clipped_meshes);
+    }
+
+    /// Creates the graphics pipeline for the task node, this **must** be called after taskgraph construction.
+    pub fn create_task_pipeline(
+        &mut self,
+        task_graph: &mut ExecutableTaskGraph<W>,
+        resources: &Arc<Resources>,
+        device: &Arc<Device>,
+    ) {
+        let node_id = self.get_node_id();
+
+        let egui_node = task_graph.task_node_mut(node_id).unwrap();
+        let subpass = egui_node.subpass().unwrap().clone();
+        egui_node
+            .task_mut()
+            .downcast_mut::<RenderEguiTask<W>>()
+            .unwrap()
+            .create_pipeline(resources, device, &subpass);
+    }
+
+    fn get_node_id(&self) -> NodeId {
+        self.egui_node_id.expect(
+            "RenderEguiTask must be initialized by calling render_egui during task graph \
+             construction.",
+        )
     }
 
     fn extract_draw_data_at_frame_end(&mut self) -> (Vec<ClippedPrimitive>, TexturesDelta) {
@@ -698,19 +718,16 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         &mut self,
         task_graph: &mut TaskGraph<W>,
         virtual_swapchain_id: Id<Swapchain>,
-        render_pass: &Arc<RenderPass>,
+        virtual_framebuffer_id: Id<Framebuffer>,
     ) -> NodeId {
         // Initialize RenderEguiTask
         let node_id = task_graph
             .create_task_node(
                 "Render Egui",
                 QueueFamilyType::Graphics,
-                RenderEguiTask::new(
-                    &self.resources,
-                    self.queue.device(),
-                    render_pass,
-                ),
+                RenderEguiTask::new(),
             )
+            .framebuffer(virtual_framebuffer_id)
             .image_access(
                 virtual_swapchain_id.current_image_id(),
                 AccessTypes::COLOR_ATTACHMENT_WRITE | AccessTypes::COLOR_ATTACHMENT_READ,
@@ -725,22 +742,27 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 }
 
 pub struct RenderEguiTask<W: 'static + RenderEguiWorld<W> + ?Sized> {
-    pipeline: Arc<GraphicsPipeline>,
-
+    pipeline: Option<Arc<GraphicsPipeline>>,
     clipped_meshes: Option<Vec<ClippedPrimitive>>,
-
     _marker: PhantomData<fn() -> W>,
 }
 
 impl<W: 'static + RenderEguiWorld<W> + ?Sized> RenderEguiTask<W> {
-    pub fn new(
+    pub fn new() -> RenderEguiTask<W> {
+        RenderEguiTask::<W> {
+            pipeline: None,
+            clipped_meshes: None,
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn create_pipeline(
+        &mut self,
         resources: &Arc<Resources>,
         device: &Arc<Device>,
-        render_pass: &Arc<RenderPass>,
-    ) -> RenderEguiTask<W> {
-        let pipeline = {
-            let subpass = Subpass::new(render_pass, 0).unwrap();
-
+        subpass: &Subpass,
+    ) {
+        self.pipeline = Some({
             let vs = render_egui_vs::load(device).unwrap().entry_point("main").unwrap();
             let fs = render_egui_fs::load(device).unwrap().entry_point("main").unwrap();
 
@@ -784,9 +806,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> RenderEguiTask<W> {
                 ..GraphicsPipelineCreateInfo::new(&layout)
             })
             .unwrap()
-        };
-
-        RenderEguiTask::<W> { pipeline, clipped_meshes: None, _marker: PhantomData }
+        });
     }
 
     pub fn set_clipped_meshes(&mut self, clipped_meshes: Vec<ClippedPrimitive>) {
@@ -804,14 +824,17 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
         render_context: &Self::World,
     ) -> TaskResult {
         let egui_system = render_context.get_egui_system();
-        let framebuffers = render_context.get_framebuffers();
         let swapchain_id = render_context.get_swapchain_id();
         let clipped_meshes = self.clipped_meshes.as_ref().unwrap();
 
-        // Extract framebuffers
         let swapchain_state = task_context.swapchain(swapchain_id)?;
         let image_index = swapchain_state.current_image_index().unwrap();
-        let framebuffer = &framebuffers[image_index as usize];
+        let swapchain_extent = swapchain_state.images()[image_index as usize].extent();
+        let extent = [swapchain_extent[0], swapchain_extent[1]];
+
+        let Some(ref pipeline) = self.pipeline else {
+            panic!("Pipeline must be created before task is executed!");
+        };
 
         // When GuiConfig is reimplemented a debug_utils: Option<DebugUtilsLabel> parameter should be added.
         builder.as_raw().begin_debug_utils_label(&DebugUtilsLabel {
@@ -820,18 +843,10 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
             ..Default::default()
         })?;
 
-        builder.as_raw().begin_render_pass(
-            &RenderPassBeginInfo {
-                clear_values: vec![None],
-                ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
-            },
-            &Default::default(),
-        )?;
-
         let scale_factor = egui_system.pixels_per_point();
         let screen_size = [
-            framebuffer.extent()[0] as f32 / scale_factor,
-            framebuffer.extent()[1] as f32 / scale_factor,
+            extent[0] as f32 / scale_factor,
+            extent[1] as f32 / scale_factor,
         ];
         let output_in_linear_colorspace = egui_system.output_in_linear_colorspace.into();
 
@@ -874,12 +889,12 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
 
                         builder.set_viewport(0, &[Viewport {
                             extent: [
-                                framebuffer.extent()[0] as f32,
-                                framebuffer.extent()[1] as f32,
+                                extent[0] as f32,
+                                extent[1] as f32,
                             ],
                             ..Viewport::new()
                         }])?;
-                        builder.bind_pipeline_graphics(&self.pipeline)?;
+                        builder.bind_pipeline_graphics(&pipeline)?;
                         builder
                             .as_raw()
                             .bind_index_buffer(&vulkano::buffer::IndexBuffer::U32(indices))?
@@ -894,7 +909,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
                         current_texture = Some(mesh.texture_id);
 
                         builder.as_raw().push_constants(
-                            self.pipeline.layout(),
+                            pipeline.layout(),
                             0,
                             &render_egui_fs::PushConstants {
                                 texture_id: texture_id.1,
@@ -908,7 +923,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
                     if current_rect != Some(*clip_rect) {
                         current_rect = Some(*clip_rect);
                         let new_scissor =
-                            get_rect_scissor(scale_factor, framebuffer.extent(), *clip_rect);
+                            get_rect_scissor(scale_factor, extent, *clip_rect);
 
                         builder.set_scissor(0, &[new_scissor])?;
                     }
@@ -933,10 +948,6 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
                 }
             }
         }
-
-        builder.as_raw().end_render_pass(&Default::default())?;
-
-        builder.destroy_objects(framebuffers.iter().cloned());
 
         builder.as_raw().end_debug_utils_label()?;
 
