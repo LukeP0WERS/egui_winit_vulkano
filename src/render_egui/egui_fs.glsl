@@ -1,6 +1,12 @@
+// Orginally based on: https://github.com/ArjunNair/egui_sdl2_gl/blob/main/src/painter.rs
+
 #version 450
 
 #include "_push_constants.glsl"
+
+#ifndef BINDLESS
+layout(binding = 0, set = 0) uniform sampler2D font_texture;
+#endif
 
 layout(location = 0) in vec4 v_color;
 layout(location = 1) in vec2 v_tex_coords;
@@ -35,7 +41,14 @@ vec4 linear_from_srgba(vec4 srgb) {
 
 void main() {
     // ALL calculations should be done in gamma space, this includes texture * color and blending
-    vec4 texture_color = srgba_from_linear(texture(vko_sampler2D(texture_id, sampler_id), v_tex_coords));
+    vec4 texture_color = srgba_from_linear(texture(
+        #ifdef BINDLESS
+        vko_sampler2D(texture_id, sampler_id), 
+        #else
+        font_texture,
+        #endif
+        v_tex_coords
+    ));
     vec4 color = v_color * texture_color;
 
     // If output_in_linear_colorspace is true, we are rendering into an sRGB image, for which we'll convert to linear color space.

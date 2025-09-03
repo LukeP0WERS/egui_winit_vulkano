@@ -16,14 +16,13 @@ use vulkano::{
     device::Queue,
     image::{
         view::{ImageView, ImageViewCreateInfo},
-        AllocateImageError, Image, ImageCreateInfo, ImageLayout, ImageType, ImageUsage,
+        AllocateImageError, Image, ImageCreateInfo, ImageType, ImageUsage,
     },
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
     Validated, VulkanError,
 };
 use vulkano_taskgraph::{
     command_buffer::CopyBufferToImageInfo,
-    descriptor_set::SampledImageId,
     graph::ExecuteError,
     resource::{AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources},
     Id,
@@ -38,13 +37,13 @@ pub enum ImageCreationError {
 }
 
 pub fn immutable_texture_from_bytes<W: 'static + ?Sized>(
-    queue: Arc<Queue>,
-    resources: Arc<Resources>,
+    queue: &Arc<Queue>,
+    resources: &Arc<Resources>,
     flight_id: Id<Flight>,
     byte_data: &[u8],
     dimensions: [u32; 2],
     format: vulkano::format::Format,
-) -> Result<(Id<Image>, SampledImageId), ImageCreationError> {
+) -> Result<(Id<Image>, Arc<ImageView>), ImageCreationError> {
     let texture_data_buffer = resources
         .create_buffer(
             &BufferCreateInfo { usage: BufferUsage::TRANSFER_SRC, ..Default::default() },
@@ -70,12 +69,9 @@ pub fn immutable_texture_from_bytes<W: 'static + ?Sized>(
         )
         .map_err(ImageCreationError::AllocateImage)?;
 
-    let bcx = resources.bindless_context().unwrap();
     let image = resources.image(texture_id).unwrap().image().clone();
     let image_view = ImageView::new(&image, &ImageViewCreateInfo::from_image(&image))
         .map_err(ImageCreationError::Vulkan)?;
-
-    let sampled_image_id = bcx.global_set().add_sampled_image(image_view, ImageLayout::General);
 
     let flight = resources.flight(flight_id).unwrap();
     flight.wait(None).unwrap();
@@ -109,17 +105,17 @@ pub fn immutable_texture_from_bytes<W: 'static + ?Sized>(
     let flight = resources.flight(flight_id).unwrap();
     flight.wait(None).unwrap();
 
-    Ok((texture_id, sampled_image_id))
+    Ok((texture_id, image_view))
 }
 
 #[cfg(feature = "image")]
 pub fn immutable_texture_from_file<W: 'static + ?Sized>(
-    queue: Arc<Queue>,
-    resources: Arc<Resources>,
+    queue: &Arc<Queue>,
+    resources: &Arc<Resources>,
     flight_id: Id<Flight>,
     file_bytes: &[u8],
     format: vulkano::format::Format,
-) -> Result<(Id<Image>, SampledImageId), ImageCreationError> {
+) -> Result<(Id<Image>, Arc<ImageView>), ImageCreationError> {
     use image::GenericImageView;
 
     let img = image::load_from_memory(file_bytes).expect("Failed to load image from bytes");
@@ -139,6 +135,7 @@ pub fn immutable_texture_from_file<W: 'static + ?Sized>(
         new_rgba.to_vec()
     };
     let dimensions = img.dimensions();
+
     immutable_texture_from_bytes::<W>(
         queue,
         resources,

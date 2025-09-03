@@ -15,12 +15,20 @@ use vulkano::{
         allocator::{SubbufferAllocator, SubbufferAllocatorCreateInfo},
         Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer,
     },
+    descriptor_set::{
+        allocator::StandardDescriptorSetAllocator,
+        layout::{
+            DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
+            DescriptorType,
+        },
+        DescriptorSet, WriteDescriptorSet,
+    },
     device::{Device, Queue},
     format::{Format, NumericFormat},
     image::{
         sampler::{
-            ComponentMapping, ComponentSwizzle, Filter, SamplerAddressMode, SamplerCreateInfo,
-            SamplerMipmapMode,
+            ComponentMapping, ComponentSwizzle, Filter, Sampler, SamplerAddressMode,
+            SamplerCreateInfo, SamplerMipmapMode,
         },
         view::{ImageView, ImageViewCreateInfo},
         Image, ImageAspects, ImageCreateInfo, ImageFormatInfo, ImageLayout, ImageSubresourceLayers,
@@ -35,11 +43,20 @@ use vulkano::{
         graphics::{
             color_blend::{
                 AttachmentBlend, BlendFactor, ColorBlendAttachmentState, ColorBlendState,
-            }, input_assembly::InputAssemblyState, multisample::MultisampleState, rasterization::RasterizationState, subpass::PipelineSubpassType, vertex_input::{Vertex, VertexDefinition}, viewport::{Scissor, Viewport, ViewportState}, GraphicsPipelineCreateInfo
+            },
+            input_assembly::InputAssemblyState,
+            multisample::MultisampleState,
+            rasterization::RasterizationState,
+            subpass::PipelineSubpassType,
+            vertex_input::{Vertex, VertexDefinition},
+            viewport::{Scissor, Viewport, ViewportState},
+            GraphicsPipelineCreateInfo,
         },
-        DynamicState, GraphicsPipeline, Pipeline, PipelineShaderStageCreateInfo,
+        DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout,
+        PipelineShaderStageCreateInfo,
     },
     render_pass::{Framebuffer, Subpass},
+    shader::ShaderStages,
     swapchain::{Surface, Swapchain},
     DeviceSize, NonZeroDeviceSize,
 };
@@ -82,6 +99,26 @@ pub struct EguiVertex {
     pub color: [u8; 4],
 }
 
+pub struct EguiSystemConfig {
+    /// When true the bindless system will be used for rendering as long as the bindless context
+    /// exists for [Resources]. If not descriptor sets will be bound for the images instead.
+    use_bindless: bool,
+}
+
+impl Default for EguiSystemConfig {
+    fn default() -> Self {
+        Self { use_bindless: true }
+    }
+}
+
+#[derive(Clone)]
+pub enum EguiTexture {
+    /// Can be used even if bindless is enabled, and will be converted to a bindless texture if it is.
+    Raw { image_view: Arc<ImageView>, sampler: Arc<Sampler> },
+    /// Must only be used if bindless is enabled.
+    Bindless { sampled_image_id: SampledImageId, sampler_id: SamplerId },
+}
+
 /// Your task graph's world type needs to implement this to expose data
 /// needed during [RenderEguiTask] execution.
 pub trait RenderEguiWorld<W: 'static + RenderEguiWorld<W> + ?Sized> {
@@ -97,6 +134,7 @@ pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
     resources: Arc<Resources>,
     flight_id: Id<Flight>,
 
+    use_bindless: bool,
     output_in_linear_colorspace: bool,
 
     pub egui_ctx: egui::Context,
@@ -111,9 +149,14 @@ pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
     /// May be R8G8_UNORM or R8G8B8A8_SRGB
     font_format: Format,
 
-    font_sampler: SamplerId,
+    font_sampler: Arc<Sampler>,
+    font_sampler_id: Option<SamplerId>,
 
-    texture_ids: AHashMap<egui::TextureId, (Id<Image>, SampledImageId, SamplerId)>,
+    descriptor_set_allocator: Option<Arc<StandardDescriptorSetAllocator>>,
+    descriptor_set_layout: Option<Arc<DescriptorSetLayout>>,
+    texture_descriptor_sets: Option<AHashMap<egui::TextureId, Arc<DescriptorSet>>>,
+
+    texture_ids: AHashMap<egui::TextureId, (Id<Image>, EguiTexture)>,
     next_native_tex_id: u64,
 
     egui_node_id: Option<NodeId>,
@@ -124,12 +167,15 @@ pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
 impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     pub fn new(
         event_loop: &ActiveEventLoop,
-        swapchain_format: Format,
         surface: Arc<Surface>,
         queue: Arc<Queue>,
         resources: Arc<Resources>,
         flight_id: Id<Flight>,
+        swapchain_format: Format,
+        config: EguiSystemConfig,
     ) -> Self {
+        let use_bindless = config.use_bindless && resources.bindless_context().is_some();
+
         let output_in_linear_colorspace =
             swapchain_format.numeric_format_color().unwrap() == NumericFormat::SRGB;
 
@@ -152,37 +198,66 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             Some(max_texture_side),
         );
 
-        let font_format = Self::choose_font_format(queue.device().clone());
+        let font_format = Self::choose_font_format(queue.device());
 
-        let bcx = resources.bindless_context().unwrap();
+        let font_sampler = Sampler::new(queue.device(), &SamplerCreateInfo {
+            mag_filter: Filter::Linear,
+            min_filter: Filter::Linear,
+            address_mode: [SamplerAddressMode::ClampToEdge; 3],
+            mipmap_mode: SamplerMipmapMode::Linear,
+            ..Default::default()
+        })
+        .unwrap();
 
-        let font_sampler = bcx
-            .global_set()
-            .create_sampler(&SamplerCreateInfo {
-                mag_filter: Filter::Linear,
-                min_filter: Filter::Linear,
-                address_mode: [SamplerAddressMode::ClampToEdge; 3],
-                mipmap_mode: SamplerMipmapMode::Linear,
-                ..Default::default()
-            })
-            .unwrap();
+        let font_sampler_id = if use_bindless {
+            let bcx = resources.bindless_context().unwrap();
 
-        let vertex_index_buffer_pool = SubbufferAllocator::new(
-            resources.memory_allocator(),
-            &SubbufferAllocatorCreateInfo {
+            Some(bcx.global_set().add_sampler(font_sampler.clone()))
+        } else {
+            None
+        };
+
+        let vertex_index_buffer_pool =
+            SubbufferAllocator::new(resources.memory_allocator(), &SubbufferAllocatorCreateInfo {
                 arena_size: INDEX_BUFFER_SIZE + VERTEX_BUFFER_SIZE,
                 buffer_usage: BufferUsage::INDEX_BUFFER | BufferUsage::VERTEX_BUFFER,
                 memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
-            },
-        );
+            });
+
+        let (descriptor_set_allocator, descriptor_set_layout, texture_descriptor_sets) =
+            if use_bindless {
+                let descriptor_set_allocator =
+                    StandardDescriptorSetAllocator::new(queue.device(), &Default::default()).into();
+
+                let descriptor_set_layout =
+                    DescriptorSetLayout::new(queue.device(), &DescriptorSetLayoutCreateInfo {
+                        bindings: &[DescriptorSetLayoutBinding {
+                            stages: ShaderStages::FRAGMENT,
+                            ..DescriptorSetLayoutBinding::new(DescriptorType::CombinedImageSampler)
+                        }],
+                        ..Default::default()
+                    })
+                    .unwrap();
+
+                let texture_descriptor_sets = AHashMap::default();
+
+                (
+                    Some(descriptor_set_allocator),
+                    Some(descriptor_set_layout),
+                    Some(texture_descriptor_sets),
+                )
+            } else {
+                (None, None, None)
+            };
 
         Self {
             queue: queue.clone(),
             resources: resources.clone(),
             flight_id,
 
+            use_bindless,
             output_in_linear_colorspace,
 
             egui_ctx,
@@ -197,8 +272,13 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             font_format,
 
             font_sampler,
+            font_sampler_id,
 
+            descriptor_set_allocator,
+            descriptor_set_layout,
+            texture_descriptor_sets,
             texture_ids: AHashMap::default(),
+
             next_native_tex_id: 0,
 
             egui_node_id: None,
@@ -216,19 +296,13 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     ) -> NodeId {
         // Initialize RenderEguiTask
         let node_id = task_graph
-            .create_task_node(
-                "Render Egui",
-                QueueFamilyType::Graphics,
-                RenderEguiTask::new(),
-            )
+            .create_task_node("Render Egui", QueueFamilyType::Graphics, RenderEguiTask::new())
             .framebuffer(virtual_framebuffer_id)
             .color_attachment(
                 virtual_swapchain_id.current_image_id(),
                 AccessTypes::COLOR_ATTACHMENT_WRITE | AccessTypes::COLOR_ATTACHMENT_READ,
                 ImageLayoutType::Optimal,
-                &AttachmentInfo {
-                    ..Default::default()
-                },
+                &AttachmentInfo { ..Default::default() },
             )
             .build();
 
@@ -269,11 +343,12 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
         let egui_node = task_graph.task_node_mut(node_id).unwrap();
         let subpass = egui_node.subpass().unwrap().clone();
-        egui_node
-            .task_mut()
-            .downcast_mut::<RenderEguiTask<W>>()
-            .unwrap()
-            .create_pipeline(resources, device, &subpass);
+        egui_node.task_mut().downcast_mut::<RenderEguiTask<W>>().unwrap().create_pipeline(
+            resources,
+            device,
+            &subpass,
+            self.use_bindless,
+        );
     }
 
     fn get_node_id(&self) -> NodeId {
@@ -283,16 +358,27 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         )
     }
 
-    /// Registers a user texture. User texture needs to be unregistered when it is no longer needed
+    /// Registers a user texture. User texture needs to be unregistered when it is no longer needed.
+    /// If bindless is in use raw textures can still be provided as they will be converted to bindless.
     pub fn register_image(
         &mut self,
         image: Id<Image>,
-        sampled_image_id: SampledImageId,
-        sampler: SamplerId,
+        egui_texture: EguiTexture,
     ) -> egui::TextureId {
+        let egui_texture = self.convert_egui_texture(egui_texture);
+
         let id = egui::TextureId::User(self.next_native_tex_id);
         self.next_native_tex_id += 1;
-        self.texture_ids.insert(id, (image, sampled_image_id, sampler));
+
+        if !self.use_bindless {
+            if let EguiTexture::Raw { ref image_view, ref sampler } = egui_texture {
+                let descriptor_set = self.sampled_image_descriptor_set(image_view, sampler);
+                self.texture_descriptor_sets.as_mut().unwrap().insert(id, descriptor_set);
+            }
+        }
+
+        self.texture_ids.insert(id, (image, egui_texture));
+
         id
     }
 
@@ -306,18 +392,19 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         format: vulkano::format::Format,
         sampler_create_info: SamplerCreateInfo,
     ) -> Result<egui::TextureId, ImageCreationError> {
-        let bcx = self.resources.bindless_context().unwrap();
-        let sampler = bcx.global_set().create_sampler(&sampler_create_info).unwrap();
-
-        let (image_id, sampled_image_id) = immutable_texture_from_file::<W>(
-            self.queue.clone(),
-            self.resources.clone(),
+        let (image_id, image_view) = immutable_texture_from_file::<W>(
+            &self.queue,
+            &self.resources,
             self.flight_id,
             image_file_bytes,
             format,
         )?;
 
-        Ok(self.register_image(image_id, sampled_image_id, sampler))
+        let sampler = Sampler::new(self.queue.device(), &sampler_create_info).unwrap();
+
+        let egui_texture = self.get_egui_texture(image_view, sampler);
+
+        Ok(self.register_image(image_id, egui_texture))
     }
 
     pub fn register_user_image_from_bytes(
@@ -327,35 +414,93 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         format: vulkano::format::Format,
         sampler_create_info: SamplerCreateInfo,
     ) -> Result<egui::TextureId, ImageCreationError> {
-        let bcx = self.resources.bindless_context().unwrap();
-        let sampler = bcx.global_set().create_sampler(&sampler_create_info).unwrap();
-
-        let (image_id, sampled_image_id) = immutable_texture_from_bytes::<W>(
-            self.queue.clone(),
-            self.resources.clone(),
+        let (image_id, image_view) = immutable_texture_from_bytes::<W>(
+            &self.queue,
+            &self.resources,
             self.flight_id,
             image_byte_data,
             dimensions,
             format,
         )?;
 
-        Ok(self.register_image(image_id, sampled_image_id, sampler))
+        let sampler = Sampler::new(self.queue.device(), &sampler_create_info).unwrap();
+
+        let egui_texture = self.get_egui_texture(image_view, sampler);
+
+        Ok(self.register_image(image_id, egui_texture))
     }
 
     /// Unregister user texture.
     pub fn unregister_image(&mut self, texture_id: egui::TextureId) {
+        if !self.use_bindless {
+            self.texture_descriptor_sets.as_mut().unwrap().remove(&texture_id);
+        }
         self.texture_ids.remove(&texture_id);
+    }
+
+    pub fn get_egui_texture(
+        &self,
+        image_view: Arc<ImageView>,
+        sampler: Arc<Sampler>,
+    ) -> EguiTexture {
+        if self.use_bindless {
+            let bcx = self.resources.bindless_context().unwrap();
+
+            let sampled_image_id =
+                bcx.global_set().add_sampled_image(image_view, ImageLayout::General);
+            let sampler_id = bcx.global_set().add_sampler(sampler);
+
+            EguiTexture::Bindless { sampled_image_id, sampler_id }
+        } else {
+            EguiTexture::Raw { image_view, sampler }
+        }
+    }
+
+    fn convert_egui_texture(&self, egui_texture: EguiTexture) -> EguiTexture {
+        if let EguiTexture::Raw { ref image_view, ref sampler } = egui_texture {
+            if self.use_bindless {
+                let bcx = self.resources.bindless_context().unwrap();
+
+                let sampled_image_id =
+                    bcx.global_set().add_sampled_image(image_view.clone(), ImageLayout::General);
+                let sampler_id = bcx.global_set().add_sampler(sampler.clone());
+
+                EguiTexture::Bindless { sampled_image_id, sampler_id }
+            } else {
+                egui_texture
+            }
+        } else {
+            assert!(self.use_bindless, "Bindless must be enabled for EguiSystem!");
+
+            egui_texture
+        }
+    }
+
+    fn sampled_image_descriptor_set(
+        &self,
+        image_view: &Arc<ImageView>,
+        sampler: &Arc<Sampler>,
+    ) -> Arc<DescriptorSet> {
+        assert!(self.use_bindless, "Bindless must be enabled for descriptor sets to be created");
+
+        DescriptorSet::new(
+            self.descriptor_set_allocator.as_ref().unwrap().clone(),
+            self.descriptor_set_layout.as_ref().unwrap().clone(),
+            [WriteDescriptorSet::image_view_sampler(0, image_view.clone(), sampler.clone())],
+            [],
+        )
+        .unwrap()
     }
 
     /// Choose a font format, attempt to minimize memory footprint and CPU unpacking time
     /// by choosing a swizzled linear format.
-    fn choose_font_format(device: Arc<Device>) -> Format {
+    fn choose_font_format(device: &Arc<Device>) -> Format {
         // Some portability subset devices are unable to swizzle views.
         let supports_swizzle =
             !device.physical_device().supported_extensions().khr_portability_subset
                 || device.physical_device().supported_features().image_view_format_swizzle;
         // Check that this format is supported for all our uses:
-        let is_supported = |device: Arc<Device>, format: Format| {
+        let is_supported = |device: &Arc<Device>, format: Format| {
             device
                 .physical_device()
                 .image_format_properties(&ImageFormatInfo {
@@ -455,54 +600,63 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let extent = [delta.image.width() as u32, delta.image.height() as u32, 1];
 
         // Copy texture data to existing image if delta pos exists (e.g. font changed)
-        let (is_new_image, (new_image_id, new_sampled_image_id, sampler_id)) =
-            if delta.pos.is_some() {
-                let Some(existing_image) = self.texture_ids.get(&id) else {
-                    // Egui wants us to update this texture but we don't have it to begin with!
-                    panic!("attempt to write into non-existing image");
-                };
-
-                (false, *existing_image)
-            } else {
-                // Otherwise save the newly created image
-                let new_image_id = self
-                    .resources
-                    .create_image(
-                        &ImageCreateInfo {
-                            image_type: ImageType::Dim2d,
-                            format,
-                            extent,
-                            usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
-                            ..Default::default()
-                        },
-                        &AllocationCreateInfo::default()
-                    )
-                    .map_err(ImageCreationError::AllocateImage)?;
-
-                //Swizzle packed font images up to a full premul white.
-                let component_mapping = match format {
-                    Format::R8G8_UNORM => ComponentMapping {
-                        r: ComponentSwizzle::Red,
-                        g: ComponentSwizzle::Red,
-                        b: ComponentSwizzle::Red,
-                        a: ComponentSwizzle::Green,
-                    },
-                    _ => ComponentMapping::identity(),
-                };
-
-                let bcx = self.resources.bindless_context().unwrap();
-                let image = self.resources.image(new_image_id).unwrap().image().clone();
-                let image_view = ImageView::new(&image, &ImageViewCreateInfo {
-                    component_mapping,
-                    ..ImageViewCreateInfo::from_image(&image)
-                })
-                .map_err(ImageCreationError::Vulkan)?;
-
-                let new_sampled_image_id =
-                    bcx.global_set().add_sampled_image(image_view, ImageLayout::General);
-
-                (true, (new_image_id, new_sampled_image_id, self.font_sampler))
+        let (is_new_image, (new_image_id, new_egui_texture)) = if delta.pos.is_some() {
+            let Some(existing_image) = self.texture_ids.get(&id) else {
+                // Egui wants us to update this texture but we don't have it to begin with!
+                panic!("attempt to write into non-existing image");
             };
+
+            (false, existing_image.clone())
+        } else {
+            // Otherwise save the newly created image
+            let new_image_id = self
+                .resources
+                .create_image(
+                    &ImageCreateInfo {
+                        image_type: ImageType::Dim2d,
+                        format,
+                        extent,
+                        usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
+                        ..Default::default()
+                    },
+                    &AllocationCreateInfo::default(),
+                )
+                .map_err(ImageCreationError::AllocateImage)?;
+
+            //Swizzle packed font images up to a full premul white.
+            let component_mapping = match format {
+                Format::R8G8_UNORM => ComponentMapping {
+                    r: ComponentSwizzle::Red,
+                    g: ComponentSwizzle::Red,
+                    b: ComponentSwizzle::Red,
+                    a: ComponentSwizzle::Green,
+                },
+                _ => ComponentMapping::identity(),
+            };
+
+            let image = self.resources.image(new_image_id).unwrap().image().clone();
+            let image_view = ImageView::new(&image, &ImageViewCreateInfo {
+                component_mapping,
+                ..ImageViewCreateInfo::from_image(&image)
+            })
+            .map_err(ImageCreationError::Vulkan)?;
+
+            let new_egui_texture = if self.use_bindless {
+                let bcx = self.resources.bindless_context().unwrap();
+
+                let sampled_image_id =
+                    bcx.global_set().add_sampled_image(image_view, ImageLayout::General);
+                let sampler_id = self.font_sampler_id.unwrap();
+
+                EguiTexture::Bindless { sampled_image_id, sampler_id }
+            } else {
+                let sampler = self.font_sampler.clone();
+
+                EguiTexture::Raw { image_view, sampler }
+            };
+
+            (true, (new_image_id, new_egui_texture))
+        };
 
         let flight = self.resources.flight(self.flight_id).unwrap();
         flight.wait(None).unwrap();
@@ -538,8 +692,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                             .unwrap();
 
                         // Save!
-                        self.texture_ids
-                            .insert(id, (new_image_id, new_sampled_image_id, sampler_id));
+                        self.texture_ids.insert(id, (new_image_id, new_egui_texture));
                     } else {
                         let pos = delta.pos.unwrap();
                         // Defer upload of data
@@ -752,11 +905,7 @@ pub struct RenderEguiTask<W: 'static + RenderEguiWorld<W> + ?Sized> {
 
 impl<W: 'static + RenderEguiWorld<W> + ?Sized> RenderEguiTask<W> {
     pub fn new() -> RenderEguiTask<W> {
-        RenderEguiTask::<W> {
-            pipeline: None,
-            clipped_meshes: None,
-            _marker: PhantomData,
-        }
+        RenderEguiTask::<W> { pipeline: None, clipped_meshes: None, _marker: PhantomData }
     }
 
     pub fn create_pipeline(
@@ -764,10 +913,20 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> RenderEguiTask<W> {
         resources: &Arc<Resources>,
         device: &Arc<Device>,
         subpass: &Subpass,
+        use_bindless: bool,
     ) {
         self.pipeline = Some({
-            let vs = render_egui_vs::load(device).unwrap().entry_point("main").unwrap();
-            let fs = render_egui_fs::load(device).unwrap().entry_point("main").unwrap();
+            let (vs, fs) = if use_bindless {
+                (
+                    render_egui_bindless_vs::load(device).unwrap().entry_point("main").unwrap(),
+                    render_egui_bindless_fs::load(device).unwrap().entry_point("main").unwrap(),
+                )
+            } else {
+                (
+                    render_egui_vs::load(device).unwrap().entry_point("main").unwrap(),
+                    render_egui_fs::load(device).unwrap().entry_point("main").unwrap(),
+                )
+            };
 
             let blend = AttachmentBlend {
                 src_color_blend_factor: BlendFactor::One,
@@ -784,17 +943,19 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> RenderEguiTask<W> {
                 ..ColorBlendState::default()
             };
 
-            let stages = &[
-                PipelineShaderStageCreateInfo::new(&vs),
-                PipelineShaderStageCreateInfo::new(&fs)
-            ];
+            let stages =
+                &[PipelineShaderStageCreateInfo::new(&vs), PipelineShaderStageCreateInfo::new(&fs)];
 
-            let bcx = resources.bindless_context().unwrap();
+            let layout = if use_bindless {
+                let bcx = resources.bindless_context().unwrap();
 
-            let layout = bcx.pipeline_layout_from_stages(stages).unwrap();
+                bcx.pipeline_layout_from_stages(stages).unwrap()
+            } else {
+                PipelineLayout::from_stages(device, stages).unwrap()
+            };
 
             GraphicsPipeline::new(device, None, &GraphicsPipelineCreateInfo {
-                stages: stages,
+                stages,
                 vertex_input_state: Some(&EguiVertex::per_vertex().definition(&vs).unwrap()),
                 input_assembly_state: Some(&InputAssemblyState::default()),
                 viewport_state: Some(&ViewportState::default()),
@@ -805,7 +966,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> RenderEguiTask<W> {
                 }),
                 color_blend_state: Some(&blend_state),
                 dynamic_state: &[DynamicState::Viewport, DynamicState::Scissor],
-                subpass: Some(PipelineSubpassType::BeginRenderPass(&subpass)),
+                subpass: Some(PipelineSubpassType::BeginRenderPass(subpass)),
                 ..GraphicsPipelineCreateInfo::new(&layout)
             })
             .unwrap()
@@ -847,10 +1008,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
         })?;
 
         let scale_factor = egui_system.pixels_per_point();
-        let screen_size = [
-            extent[0] as f32 / scale_factor,
-            extent[1] as f32 / scale_factor,
-        ];
+        let screen_size = [extent[0] as f32 / scale_factor, extent[1] as f32 / scale_factor];
         let output_in_linear_colorspace = egui_system.output_in_linear_colorspace.into();
 
         let mesh_buffers = egui_system.upload_meshes(clipped_meshes);
@@ -891,13 +1049,10 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
                         };
 
                         builder.set_viewport(0, &[Viewport {
-                            extent: [
-                                extent[0] as f32,
-                                extent[1] as f32,
-                            ],
+                            extent: [extent[0] as f32, extent[1] as f32],
                             ..Viewport::new()
                         }])?;
-                        builder.bind_pipeline_graphics(&pipeline)?;
+                        builder.bind_pipeline_graphics(pipeline)?;
                         builder
                             .as_raw()
                             .bind_index_buffer(&vulkano::buffer::IndexBuffer::U32(indices))?
@@ -911,22 +1066,61 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
                         };
                         current_texture = Some(mesh.texture_id);
 
-                        builder.as_raw().push_constants(
-                            pipeline.layout(),
-                            0,
-                            &render_egui_fs::PushConstants {
-                                texture_id: texture_id.1,
-                                sampler_id: texture_id.2,
-                                screen_size,
-                                output_in_linear_colorspace,
-                            },
-                        )?;
+                        if egui_system.use_bindless {
+                            if let EguiTexture::Bindless { sampled_image_id, sampler_id } =
+                                texture_id.1
+                            {
+                                builder.as_raw().push_constants(
+                                    pipeline.layout(),
+                                    0,
+                                    &render_egui_bindless_fs::PushConstants {
+                                        texture_id: sampled_image_id,
+                                        sampler_id,
+                                        screen_size,
+                                        output_in_linear_colorspace,
+                                    },
+                                )?;
+                            } else {
+                                panic!(
+                                    "Raw textures must be converted to bindless before rendering."
+                                );
+                            }
+                        } else {
+                            let texture_descriptor_sets =
+                                egui_system.texture_descriptor_sets.as_ref().unwrap();
+
+                            let Some(descriptor_set) =
+                                texture_descriptor_sets.get(&mesh.texture_id)
+                            else {
+                                eprintln!(
+                                    "Descriptor set could not be found for this texture {:?}",
+                                    mesh.texture_id
+                                );
+                                continue;
+                            };
+
+                            builder.as_raw().bind_descriptor_sets(
+                                PipelineBindPoint::Graphics,
+                                self.pipeline.as_ref().unwrap().layout(),
+                                0,
+                                &[descriptor_set.as_raw()],
+                                &[0],
+                            )?;
+
+                            builder.as_raw().push_constants(
+                                pipeline.layout(),
+                                0,
+                                &render_egui_fs::PushConstants {
+                                    screen_size,
+                                    output_in_linear_colorspace,
+                                },
+                            )?;
+                        }
                     };
                     // Calculate and set scissor, if different
                     if current_rect != Some(*clip_rect) {
                         current_rect = Some(*clip_rect);
-                        let new_scissor =
-                            get_rect_scissor(scale_factor, extent, *clip_rect);
+                        let new_scissor = get_rect_scissor(scale_factor, extent, *clip_rect);
 
                         builder.set_scissor(0, &[new_scissor])?;
                     }
@@ -982,6 +1176,8 @@ fn surface_window(surface: &Surface) -> &Window {
     surface.object().unwrap().downcast_ref::<Window>().unwrap()
 }
 
+// Bindful shaders:
+
 mod render_egui_vs {
     vulkano_shaders::shader! {
         ty: "vertex",
@@ -989,10 +1185,27 @@ mod render_egui_vs {
     }
 }
 
-// Similar to https://github.com/ArjunNair/egui_sdl2_gl/blob/main/src/painter.rs
 mod render_egui_fs {
     vulkano_shaders::shader! {
         ty: "fragment",
         path: "./src/render_egui/egui_fs.glsl",
+    }
+}
+
+// Bindless shaders:
+
+mod render_egui_bindless_vs {
+    vulkano_shaders::shader! {
+        ty: "vertex",
+        path: "./src/render_egui/egui_vs.glsl",
+        define: [("BINDLESS", "")],
+    }
+}
+
+mod render_egui_bindless_fs {
+    vulkano_shaders::shader! {
+        ty: "fragment",
+        path: "./src/render_egui/egui_fs.glsl",
+        define: [("BINDLESS", "")],
     }
 }
