@@ -16,12 +16,10 @@ use vulkano::{
         Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer,
     },
     descriptor_set::{
-        allocator::StandardDescriptorSetAllocator,
-        layout::{
+        allocator::StandardDescriptorSetAllocator, layout::{
             DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
             DescriptorType,
-        },
-        DescriptorSet, WriteDescriptorSet,
+        }, DescriptorImageInfo, DescriptorSet, WriteDescriptorSet
     },
     device::{Device, Queue},
     format::{Format, NumericFormat},
@@ -486,7 +484,11 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         DescriptorSet::new(
             self.descriptor_set_allocator.as_ref().unwrap().clone(),
             self.descriptor_set_layout.as_ref().unwrap().clone(),
-            [WriteDescriptorSet::image_view_sampler(0, image_view.clone(), sampler.clone())],
+            [WriteDescriptorSet::image(0, DescriptorImageInfo {
+                image_view: Some(image_view.clone()),
+                sampler: Some(sampler.clone()),
+                image_layout: ImageLayout::ShaderReadOnlyOptimal,
+            })],
             [],
         )
         .unwrap()
