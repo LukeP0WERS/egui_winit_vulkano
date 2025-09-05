@@ -692,9 +692,6 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                                 ..Default::default()
                             })
                             .unwrap();
-
-                        // Save!
-                        self.texture_ids.insert(id, (new_image_id, new_egui_texture));
                     } else {
                         let pos = delta.pos.unwrap();
                         // Defer upload of data
@@ -731,6 +728,16 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
         let flight = self.resources.flight(self.flight_id).unwrap();
         flight.wait(None).unwrap();
+
+        if is_new_image {
+            if !self.use_bindless {
+                if let EguiTexture::Raw { ref image_view, ref sampler } = new_egui_texture {
+                    let descriptor_set = self.sampled_image_descriptor_set(image_view, sampler);
+                    self.texture_descriptor_sets.as_mut().unwrap().insert(id, descriptor_set);
+                }
+            }
+            self.texture_ids.insert(id, (new_image_id, new_egui_texture));
+        }
 
         Ok(())
     }
