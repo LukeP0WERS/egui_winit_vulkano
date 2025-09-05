@@ -225,7 +225,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             });
 
         let (descriptor_set_allocator, descriptor_set_layout, texture_descriptor_sets) =
-            if use_bindless {
+            if !use_bindless {
                 let descriptor_set_allocator =
                     StandardDescriptorSetAllocator::new(queue.device(), &Default::default()).into();
 

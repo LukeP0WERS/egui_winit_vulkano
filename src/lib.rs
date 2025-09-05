@@ -10,7 +10,7 @@
 mod egui_system;
 mod utils;
 
-pub use egui_system::{EguiSystem, EguiTexture, RenderEguiWorld};
+pub use egui_system::{EguiSystem, EguiSystemConfig, EguiTexture, RenderEguiWorld};
 pub use utils::immutable_texture_from_bytes;
 #[cfg(feature = "image")]
 pub use utils::immutable_texture_from_file;
