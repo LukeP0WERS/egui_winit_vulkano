@@ -1113,7 +1113,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
                                 self.pipeline.as_ref().unwrap().layout(),
                                 0,
                                 &[descriptor_set.as_raw()],
-                                &[0],
+                                &[],
                             )?;
 
                             builder.as_raw().push_constants(
