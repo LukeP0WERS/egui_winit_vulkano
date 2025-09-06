@@ -100,7 +100,7 @@ pub struct EguiVertex {
 pub struct EguiSystemConfig {
     /// When true the bindless system will be used for rendering as long as the bindless context
     /// exists for [Resources]. If not descriptor sets will be bound for the images instead.
-    use_bindless: bool,
+    pub use_bindless: bool,
 }
 
 impl Default for EguiSystemConfig {
