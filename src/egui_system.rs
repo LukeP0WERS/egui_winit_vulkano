@@ -479,7 +479,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         image_view: &Arc<ImageView>,
         sampler: &Arc<Sampler>,
     ) -> Arc<DescriptorSet> {
-        assert!(self.use_bindless, "Bindless must be enabled for descriptor sets to be created");
+        assert!(!self.use_bindless, "Bindless must be disabled for descriptor sets to be created");
 
         DescriptorSet::new(
             self.descriptor_set_allocator.as_ref().unwrap().clone(),
