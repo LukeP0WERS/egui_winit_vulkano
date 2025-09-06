@@ -16,10 +16,12 @@ use vulkano::{
         Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer,
     },
     descriptor_set::{
-        allocator::StandardDescriptorSetAllocator, layout::{
+        allocator::StandardDescriptorSetAllocator,
+        layout::{
             DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
             DescriptorType,
-        }, DescriptorImageInfo, DescriptorSet, WriteDescriptorSet
+        },
+        DescriptorImageInfo, DescriptorSet, WriteDescriptorSet,
     },
     device::{Device, Queue},
     format::{Format, NumericFormat},
@@ -101,11 +103,13 @@ pub struct EguiSystemConfig {
     /// When true the bindless system will be used for rendering as long as the bindless context
     /// exists for [Resources]. If not descriptor sets will be bound for the images instead.
     pub use_bindless: bool,
+    /// Optional debug utils to be associated with the work done when rendering egui.
+    pub debug_utils: Option<DebugUtilsLabel>,
 }
 
 impl Default for EguiSystemConfig {
     fn default() -> Self {
-        Self { use_bindless: true }
+        Self { use_bindless: true, debug_utils: None }
     }
 }
 
@@ -124,15 +128,22 @@ pub trait RenderEguiWorld<W: 'static + RenderEguiWorld<W> + ?Sized> {
     fn get_swapchain_id(&self) -> Id<Swapchain>;
 }
 
-/// TODO:
-/// * Reimplement automatic render pass creation with correct ImageLayoutType
-/// * CallbackFn is not implemented
+/// `EguiSystem` is a rendering backend for egui which is meant to contain it's state and provide a
+/// means of integrating egui with an existing taskgraph. There are three functions which must be called
+/// to properly fully initialize `EguiSystem` after it has been created:
+///
+/// - [`render_egui`] This must be called during task graph construction, it creates a taskgraph node for rendering egui and returns it's NodeId for synchronization.
+/// - [`create_task_pipeline`] This must be called after task graph construction and requires access to `ExecutableTaskGraph`.
+/// - [`update_task_draw_data`] This should be called at the end every frame to update textures and mesh data.
+///
+/// You need to use this with automatic render pass creation and it will render directly to the swapchain.
 pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
     queue: Arc<Queue>,
     resources: Arc<Resources>,
     flight_id: Id<Flight>,
 
     use_bindless: bool,
+    debug_utils: Option<DebugUtilsLabel>,
     output_in_linear_colorspace: bool,
 
     pub egui_ctx: egui::Context,
@@ -173,6 +184,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         config: EguiSystemConfig,
     ) -> Self {
         let use_bindless = config.use_bindless && resources.bindless_context().is_some();
+        let debug_utils = config.debug_utils;
 
         let output_in_linear_colorspace =
             swapchain_format.numeric_format_color().unwrap() == NumericFormat::SRGB;
@@ -255,6 +267,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             resources: resources.clone(),
             flight_id,
 
+            debug_utils,
             use_bindless,
             output_in_linear_colorspace,
 
@@ -309,6 +322,25 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         node_id
     }
 
+    /// Creates the graphics pipeline for the task node, this **must** be called after taskgraph construction.
+    pub fn create_task_pipeline(
+        &mut self,
+        task_graph: &mut ExecutableTaskGraph<W>,
+        resources: &Arc<Resources>,
+        device: &Arc<Device>,
+    ) {
+        let node_id = self.get_node_id();
+
+        let egui_node = task_graph.task_node_mut(node_id).unwrap();
+        let subpass = egui_node.subpass().unwrap().clone();
+        egui_node.task_mut().downcast_mut::<RenderEguiTask<W>>().unwrap().create_pipeline(
+            resources,
+            device,
+            &subpass,
+            self.use_bindless,
+        );
+    }
+
     /// Extracts the draw data for the frame, updates textures, and sends mesh primitive data required for rendering
     /// to [RenderEguiTask].
     pub fn update_task_draw_data(&mut self, task_graph: &mut ExecutableTaskGraph<W>) {
@@ -328,25 +360,6 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             .downcast_mut::<RenderEguiTask<W>>()
             .unwrap()
             .set_clipped_meshes(clipped_meshes);
-    }
-
-    /// Creates the graphics pipeline for the task node, this **must** be called after taskgraph construction.
-    pub fn create_task_pipeline(
-        &mut self,
-        task_graph: &mut ExecutableTaskGraph<W>,
-        resources: &Arc<Resources>,
-        device: &Arc<Device>,
-    ) {
-        let node_id = self.get_node_id();
-
-        let egui_node = task_graph.task_node_mut(node_id).unwrap();
-        let subpass = egui_node.subpass().unwrap().clone();
-        egui_node.task_mut().downcast_mut::<RenderEguiTask<W>>().unwrap().create_pipeline(
-            resources,
-            device,
-            &subpass,
-            self.use_bindless,
-        );
     }
 
     fn get_node_id(&self) -> NodeId {
@@ -1009,12 +1022,9 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
             panic!("Pipeline must be created before task is executed!");
         };
 
-        // When GuiConfig is reimplemented a debug_utils: Option<DebugUtilsLabel> parameter should be added.
-        builder.as_raw().begin_debug_utils_label(&DebugUtilsLabel {
-            label_name: "Render Egui".to_string(),
-            color: [1.0, 0.0, 0.0, 1.0],
-            ..Default::default()
-        })?;
+        if let Some(debug_utils_label) = &egui_system.debug_utils {
+            builder.as_raw().begin_debug_utils_label(debug_utils_label)?;
+        }
 
         let scale_factor = egui_system.pixels_per_point();
         let screen_size = [extent[0] as f32 / scale_factor, extent[1] as f32 / scale_factor];
@@ -1155,7 +1165,9 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
             }
         }
 
-        builder.as_raw().end_debug_utils_label()?;
+        if egui_system.debug_utils.is_some() {
+            builder.as_raw().end_debug_utils_label()?;
+        }
 
         Ok(())
     }
