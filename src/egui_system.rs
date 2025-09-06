@@ -176,9 +176,9 @@ pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
 impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     pub fn new(
         event_loop: &ActiveEventLoop,
-        surface: Arc<Surface>,
-        queue: Arc<Queue>,
-        resources: Arc<Resources>,
+        surface: &Arc<Surface>,
+        queue: &Arc<Queue>,
+        resources: &Arc<Resources>,
         flight_id: Id<Flight>,
         swapchain_format: Format,
         config: EguiSystemConfig,
@@ -203,7 +203,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             egui_ctx.clone(),
             egui_ctx.viewport_id(),
             event_loop,
-            Some(surface_window(&surface).scale_factor() as f32),
+            Some(surface_window(surface).scale_factor() as f32),
             Some(theme),
             Some(max_texture_side),
         );
@@ -273,7 +273,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
             egui_ctx,
             egui_winit,
-            surface,
+            surface: surface.clone(),
 
             shapes: vec![],
             textures_delta: Default::default(),
