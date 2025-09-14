@@ -7,12 +7,12 @@
 // notice may not be copied, modified, or distributed except
 // according to those terms.
 
-use std::{marker::PhantomData, ops::Range, sync::Arc};
+use std::{cell::RefCell, marker::PhantomData, ops::Range, sync::Arc};
 
 use egui::{ahash::AHashMap, epaint::Primitive, ClippedPrimitive, Rect, TexturesDelta};
 use vulkano::{
     buffer::{
-        allocator::{SubbufferAllocator, SubbufferAllocatorCreateInfo},
+        allocator::{BufferAllocator, BufferAllocatorCreateInfo},
         Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer,
     },
     descriptor_set::{
@@ -36,7 +36,7 @@ use vulkano::{
     },
     instance::debug::DebugUtilsLabel,
     memory::{
-        allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
+        allocator::{AllocationCreateInfo, BumpAllocator, DeviceLayout, MemoryTypeFilter},
         DeviceAlignment,
     },
     pipeline::{
@@ -153,7 +153,7 @@ pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
     shapes: Vec<egui::epaint::ClippedShape>,
     textures_delta: egui::TexturesDelta,
 
-    vertex_index_buffer_pool: SubbufferAllocator,
+    vertex_index_buffer_pool: RefCell<BufferAllocator<BumpAllocator>>,
 
     /// May be R8G8_UNORM or R8G8B8A8_SRGB
     font_format: Format,
@@ -227,14 +227,16 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             None
         };
 
-        let vertex_index_buffer_pool =
-            SubbufferAllocator::new(resources.memory_allocator(), &SubbufferAllocatorCreateInfo {
-                arena_size: INDEX_BUFFER_SIZE + VERTEX_BUFFER_SIZE,
+        let vertex_index_buffer_pool = RefCell::new(BufferAllocator::new(
+            resources.memory_allocator(),
+            &BufferAllocatorCreateInfo {
+                block_size: INDEX_BUFFER_SIZE + VERTEX_BUFFER_SIZE,
                 buffer_usage: BufferUsage::INDEX_BUFFER | BufferUsage::VERTEX_BUFFER,
                 memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
-            });
+            },
+        ));
 
         let (descriptor_set_allocator, descriptor_set_layout, texture_descriptor_sets) =
             if !use_bindless {
@@ -883,7 +885,12 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
         // Allocate a buffer which can hold both packed arrays:
         let layout = DeviceLayout::new(total_size_bytes, VERTEX_ALIGN.max(INDEX_ALIGN)).unwrap();
-        let buffer = self.vertex_index_buffer_pool.allocate(layout).unwrap();
+        let mut vertex_index_buffer_pool = self.vertex_index_buffer_pool.borrow_mut();
+        vertex_index_buffer_pool.reset();
+        let buffer_allocation = vertex_index_buffer_pool.allocate(layout).unwrap();
+
+        let buffer =
+            Subbuffer::from(buffer_allocation.buffer.clone()).slice(buffer_allocation.as_range());
 
         // We must put the items with stricter align *first* in the packed buffer.
         // Correct at time of writing, but assert in case that changes.
