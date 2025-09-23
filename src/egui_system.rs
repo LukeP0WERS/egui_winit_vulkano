@@ -683,68 +683,65 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let flight = self.resources.flight(self.flight_id).unwrap();
         flight.wait(None).unwrap();
 
-        unsafe {
-            vulkano_taskgraph::execute(
-                &self.queue,
-                &self.resources,
-                self.flight_id,
-                |builder, task_context| {
-                    let write = task_context.write_buffer::<[u8]>(buffer_id, range.clone())?;
-                    write.copy_from_slice(&bytes);
+        unsafe { vulkano_taskgraph::execute(
+            &self.queue,
+            &self.resources,
+            self.flight_id,
+            |builder, task_context| {
+                let write = task_context.write_buffer::<[u8]>(buffer_id, range.clone())?;
+                write.copy_from_slice(&bytes);
 
-                    if is_new_image {
-                        // Defer upload of data
-                        builder
-                            .copy_buffer_to_image(&CopyBufferToImageInfo {
-                                src_buffer: buffer_id,
-                                dst_image: new_image_id,
-                                regions: &[BufferImageCopy {
-                                    buffer_offset: range.start,
-                                    image_extent: extent,
-                                    image_subresource: ImageSubresourceLayers {
-                                        aspects: ImageAspects::COLOR,
-                                        mip_level: 0,
-                                        base_array_layer: 0,
-                                        layer_count: 1,
-                                    },
-                                    ..Default::default()
-                                }],
+                if is_new_image {
+                    // Defer upload of data
+                    builder
+                        .copy_buffer_to_image(&CopyBufferToImageInfo {
+                            src_buffer: buffer_id,
+                            dst_image: new_image_id,
+                            regions: &[BufferImageCopy {
+                                buffer_offset: range.start,
+                                image_extent: extent,
+                                image_subresource: ImageSubresourceLayers {
+                                    aspects: ImageAspects::COLOR,
+                                    mip_level: 0,
+                                    base_array_layer: 0,
+                                    layer_count: 1,
+                                },
                                 ..Default::default()
-                            })
-                            .unwrap();
-                    } else {
-                        let pos = delta.pos.unwrap();
-                        // Defer upload of data
-                        builder
-                            .copy_buffer_to_image(&CopyBufferToImageInfo {
-                                src_buffer: buffer_id,
-                                dst_image: new_image_id,
-                                regions: &[BufferImageCopy {
-                                    buffer_offset: range.start,
-                                    image_offset: [pos[0] as u32, pos[1] as u32, 0],
-                                    image_extent: extent,
-                                    // Always use the whole image (no arrays or mips are performed)
-                                    image_subresource: ImageSubresourceLayers {
-                                        aspects: ImageAspects::COLOR,
-                                        mip_level: 0,
-                                        base_array_layer: 0,
-                                        layer_count: 1,
-                                    },
-                                    ..Default::default()
-                                }],
+                            }],
+                            ..Default::default()
+                        })
+                        .unwrap();
+                } else {
+                    let pos = delta.pos.unwrap();
+                    // Defer upload of data
+                    builder
+                        .copy_buffer_to_image(&CopyBufferToImageInfo {
+                            src_buffer: buffer_id,
+                            dst_image: new_image_id,
+                            regions: &[BufferImageCopy {
+                                buffer_offset: range.start,
+                                image_offset: [pos[0] as u32, pos[1] as u32, 0],
+                                image_extent: extent,
+                                // Always use the whole image (no arrays or mips are performed)
+                                image_subresource: ImageSubresourceLayers {
+                                    aspects: ImageAspects::COLOR,
+                                    mip_level: 0,
+                                    base_array_layer: 0,
+                                    layer_count: 1,
+                                },
                                 ..Default::default()
-                            })
-                            .unwrap();
-                    }
+                            }],
+                            ..Default::default()
+                        })
+                        .unwrap();
+                }
 
-                    Ok(())
-                },
-                [(buffer_id, HostAccessType::Write)],
-                [(buffer_id, AccessTypes::COPY_TRANSFER_READ)],
-                [(new_image_id, AccessTypes::COPY_TRANSFER_WRITE, ImageLayoutType::Optimal)],
-            )
-            .unwrap();
-        }
+                Ok(())
+            },
+            [(buffer_id, HostAccessType::Write)],
+            [(buffer_id, AccessTypes::COPY_TRANSFER_READ)],
+            [(new_image_id, AccessTypes::COPY_TRANSFER_WRITE, ImageLayoutType::Optimal)],
+        ) }.unwrap();
 
         let flight = self.resources.flight(self.flight_id).unwrap();
         flight.wait(None).unwrap();
@@ -1153,15 +1150,13 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
                     }
 
                     // All set up to draw!
-                    unsafe {
-                        builder.draw_indexed(
-                            mesh.indices.len() as u32,
-                            1,
-                            index_cursor,
-                            vertex_cursor as i32,
-                            0,
-                        )?;
-                    }
+                    builder.draw_indexed(
+                        mesh.indices.len() as u32,
+                        1,
+                        index_cursor,
+                        vertex_cursor as i32,
+                        0,
+                    )?;
 
                     // Consume this mesh for next iteration
                     index_cursor += mesh.indices.len() as u32;
