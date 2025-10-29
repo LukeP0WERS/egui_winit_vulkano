@@ -28,7 +28,7 @@ use vulkano::{
             SamplerCreateInfo, SamplerMipmapMode,
         },
         view::{ImageView, ImageViewCreateInfo},
-        Image, ImageAspects, ImageCreateInfo, ImageFormatInfo, ImageLayout, ImageSubresourceLayers,
+        Image, ImageAspects, ImageCreateInfo, ImageLayout, ImageSubresourceLayers,
         ImageType, ImageUsage, SampleCount,
     },
     instance::debug::DebugUtilsLabel,
@@ -152,9 +152,6 @@ pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
 
     vertex_index_buffer: Arc<Buffer>,
 
-    /// May be R8G8_UNORM or R8G8B8A8_SRGB
-    font_format: Format,
-
     font_sampler: Arc<Sampler>,
     font_sampler_id: Option<SamplerId>,
 
@@ -204,8 +201,6 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             Some(theme),
             Some(max_texture_side),
         );
-
-        let font_format = Self::choose_font_format(queue.device());
 
         let font_sampler = Sampler::new(queue.device(), &SamplerCreateInfo {
             mag_filter: Filter::Linear,
@@ -286,8 +281,6 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             textures_delta: Default::default(),
 
             vertex_index_buffer,
-
-            font_format,
 
             font_sampler,
             font_sampler_id,
@@ -514,80 +507,9 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         .unwrap()
     }
 
-    /// Choose a font format, attempt to minimize memory footprint and CPU unpacking time
-    /// by choosing a swizzled linear format.
-    fn choose_font_format(device: &Arc<Device>) -> Format {
-        // Some portability subset devices are unable to swizzle views.
-        let supports_swizzle =
-            !device.physical_device().supported_extensions().khr_portability_subset
-                || device.physical_device().supported_features().image_view_format_swizzle;
-        // Check that this format is supported for all our uses:
-        let is_supported = |device: &Arc<Device>, format: Format| {
-            device
-                .physical_device()
-                .image_format_properties(&ImageFormatInfo {
-                    format,
-                    usage: ImageUsage::SAMPLED
-                        | ImageUsage::TRANSFER_DST
-                        | ImageUsage::TRANSFER_SRC,
-                    ..Default::default()
-                })
-                // Ok(Some(..)) is supported format for this usage.
-                .is_ok_and(|properties| properties.is_some())
-        };
-        if supports_swizzle && is_supported(device, Format::R8G8_UNORM) {
-            // We can save mem by swizzling in hardware!
-            Format::R8G8_UNORM
-        } else {
-            // Rest of implementation assumes R8G8B8A8_SRGB anyway!
-            Format::R8G8B8A8_SRGB
-        }
-    }
-
-    /// Based on self.font_format, extract into bytes.
-    fn pack_font_data_into(&self, data: &egui::FontImage) -> Vec<u8> {
-        match self.font_format {
-            Format::R8G8_UNORM => {
-                // Egui expects RGB to be linear in shader, but alpha to be *nonlinear.*
-                // Thus, we use R channel for linear coverage, G for the same coverage converted to nonlinear.
-                // Then gets swizzled up to RRRG to match expected values.
-                let linear =
-                    data.pixels.iter().map(|f| (f.clamp(0.0, 1.0 - f32::EPSILON) * 256.0) as u8);
-                let bytes = linear
-                    .zip(data.srgba_pixels(None))
-                    .flat_map(|(linear, srgb)| [linear, srgb.a()])
-                    .collect();
-
-                bytes
-            }
-            Format::R8G8B8A8_SRGB => {
-                // No special tricks, pack them directly.
-                let bytes = data.srgba_pixels(None).flat_map(|color| color.to_array()).collect();
-
-                bytes
-            }
-            // This is the exhaustive list of choosable font formats.
-            _ => unreachable!(),
-        }
-    }
-
     fn image_size_bytes(&self, delta: &egui::epaint::ImageDelta) -> usize {
-        match &delta.image {
-            egui::ImageData::Color(c) => {
-                // Always four bytes per pixel for sRGBA
-                c.width() * c.height() * 4
-            }
-            egui::ImageData::Font(f) => {
-                f.width()
-                    * f.height()
-                    * match self.font_format {
-                        Format::R8G8_UNORM => 2,
-                        Format::R8G8B8A8_SRGB => 4,
-                        // Exhaustive list of valid font formats
-                        _ => unreachable!(),
-                    }
-            }
-        }
+        let image = &delta.image;
+        image.width() * image.height() * image.bytes_per_pixel()
     }
 
     /// Write a single texture delta using the provided staging region and commandbuffer
@@ -607,15 +529,9 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                     "Mismatch between texture size and texel count"
                 );
 
-                let bytes = image.pixels.iter().flat_map(|color| color.to_array()).collect();
+                let bytes: Vec<u8> = image.pixels.iter().flat_map(|color| color.to_array()).collect();
 
                 (Format::R8G8B8A8_SRGB, bytes)
-            }
-            egui::ImageData::Font(image) => {
-                // Dynamically pack based on chosen format
-                let bytes = self.pack_font_data_into(image);
-
-                (self.font_format, bytes)
             }
         };
 
