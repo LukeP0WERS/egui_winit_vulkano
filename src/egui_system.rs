@@ -596,8 +596,8 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             (true, (new_image_id, new_egui_texture))
         };
 
-        let flight = self.resources.flight(self.flight_id).unwrap();
-        flight.wait(None).unwrap();
+        //let flight = self.resources.flight(self.flight_id).unwrap();
+        //flight.wait(None).unwrap();
 
         unsafe { vulkano_taskgraph::execute(
             &self.queue,
