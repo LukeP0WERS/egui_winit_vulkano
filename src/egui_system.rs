@@ -993,10 +993,22 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
                             ..Viewport::new()
                         }])?;
                         builder.bind_pipeline_graphics(pipeline)?;
+                        
                         builder
                             .as_raw()
-                            .bind_index_buffer(&vulkano::buffer::IndexBuffer::U32(indices))?
-                            .bind_vertex_buffers(0, &[vertices.into_bytes()])?;
+                            .bind_index_buffer(
+                                &indices.buffer(),
+                                indices.offset(),
+                                indices.size(),
+                                vulkano::buffer::IndexType::U32,
+                            )?
+                            .bind_vertex_buffers(
+                                0,
+                                &[vertices.buffer()],
+                                &[vertices.offset()],
+                                &[vertices.size()],
+                                &[size_of::<EguiVertex>() as u64]
+                            )?;
                     }
                     // Find and bind image, if different.
                     if current_texture != Some(mesh.texture_id) {
