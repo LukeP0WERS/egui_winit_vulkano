@@ -620,7 +620,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                                     aspects: ImageAspects::COLOR,
                                     mip_level: 0,
                                     base_array_layer: 0,
-                                    layer_count: 1,
+                                    layer_count: None,
                                 },
                                 ..Default::default()
                             }],
@@ -643,7 +643,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                                     aspects: ImageAspects::COLOR,
                                     mip_level: 0,
                                     base_array_layer: 0,
-                                    layer_count: 1,
+                                    layer_count: None,
                                 },
                                 ..Default::default()
                             }],
@@ -999,7 +999,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
                             .bind_index_buffer(
                                 &indices.buffer(),
                                 indices.offset(),
-                                indices.size(),
+                                None,//indices.size(),
                                 vulkano::buffer::IndexType::U32,
                             )?
                             .bind_vertex_buffers(
