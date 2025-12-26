@@ -76,6 +76,7 @@ pub fn immutable_texture_from_bytes<W: 'static + ?Sized>(
     let flight = resources.flight(flight_id).unwrap();
     flight.wait(None).unwrap();
 
+    // NOT SAFE
     unsafe { vulkano_taskgraph::execute(
         &queue.clone(),
         &resources.clone(),
@@ -99,9 +100,6 @@ pub fn immutable_texture_from_bytes<W: 'static + ?Sized>(
         [(texture_id, AccessTypes::COPY_TRANSFER_WRITE, ImageLayoutType::Optimal)],
     ) } 
         .map_err(ImageCreationError::ExecuteError)?;
-
-    let flight = resources.flight(flight_id).unwrap();
-    flight.wait(None).unwrap();
 
     Ok((texture_id, image_view))
 }

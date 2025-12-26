@@ -495,14 +495,14 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         assert!(!self.use_bindless, "Bindless must be disabled for descriptor sets to be created");
 
         DescriptorSet::new(
-            self.descriptor_set_allocator.as_ref().unwrap().clone(),
-            self.descriptor_set_layout.as_ref().unwrap().clone(),
-            [WriteDescriptorSet::image(0, DescriptorImageInfo {
-                image_view: Some(image_view.clone()),
-                sampler: Some(sampler.clone()),
+            &self.descriptor_set_allocator.as_ref().unwrap().clone(),
+            &self.descriptor_set_layout.as_ref().unwrap().clone(),
+            &[WriteDescriptorSet::image(0, &DescriptorImageInfo {
+                image_view: Some(&image_view.clone()),
+                sampler: Some(&sampler.clone()),
                 image_layout: ImageLayout::ShaderReadOnlyOptimal,
             })],
-            [],
+            &[],
         )
         .unwrap()
     }
@@ -599,6 +599,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let flight = self.resources.flight(self.flight_id).unwrap();
         flight.wait(None).unwrap();
 
+        // NOT SAFE
         unsafe { vulkano_taskgraph::execute(
             &self.queue,
             &self.resources,
@@ -658,9 +659,6 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             [(buffer_id, AccessTypes::COPY_TRANSFER_READ)],
             [(new_image_id, AccessTypes::COPY_TRANSFER_WRITE, ImageLayoutType::Optimal)],
         ) }.unwrap();
-
-        let flight = self.resources.flight(self.flight_id).unwrap();
-        flight.wait(None).unwrap();
 
         if is_new_image {
             if !self.use_bindless {
@@ -932,7 +930,9 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
     ) -> TaskResult {
         let egui_system = render_context.get_egui_system();
         let swapchain_id = render_context.get_swapchain_id();
-        let clipped_meshes = self.clipped_meshes.as_ref().unwrap();
+        let Some(ref clipped_meshes) = self.clipped_meshes else {
+            return Ok(());
+        };
 
         let swapchain_state = task_context.swapchain(swapchain_id)?;
         let image_index = swapchain_state.current_image_index().unwrap();
