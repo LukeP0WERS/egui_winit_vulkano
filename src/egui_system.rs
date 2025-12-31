@@ -11,51 +11,25 @@ use std::{marker::PhantomData, ops::Range, sync::Arc};
 
 use egui::{ahash::AHashMap, epaint::Primitive, ClippedPrimitive, Rect, TexturesDelta};
 use vulkano::{
-    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
-    descriptor_set::{
-        allocator::StandardDescriptorSetAllocator,
-        layout::{
+    DeviceSize, buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, IndexType}, descriptor_set::{
+        DescriptorImageInfo, DescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator, layout::{
             DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
             DescriptorType,
-        },
-        DescriptorImageInfo, DescriptorSet, WriteDescriptorSet,
-    },
-    device::{Device, Queue},
-    format::{Format, NumericFormat},
-    image::{
-        sampler::{
+        }
+    }, device::{Device, Queue}, format::{Format, NumericFormat}, image::{
+        Image, ImageAspects, ImageCreateInfo, ImageLayout, ImageSubresourceLayers, ImageType, ImageUsage, SampleCount, sampler::{
             ComponentMapping, ComponentSwizzle, Filter, Sampler, SamplerAddressMode,
             SamplerCreateInfo, SamplerMipmapMode,
-        },
-        view::{ImageView, ImageViewCreateInfo},
-        Image, ImageAspects, ImageCreateInfo, ImageLayout, ImageSubresourceLayers,
-        ImageType, ImageUsage, SampleCount,
-    },
-    instance::debug::DebugUtilsLabel,
-    memory::{
-        allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
-        DeviceAlignment,
-    },
-    pipeline::{
-        graphics::{
-            color_blend::{
+        }, view::{ImageView, ImageViewCreateInfo}
+    }, instance::debug::DebugUtilsLabel, memory::{
+        DeviceAlignment, allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter}
+    }, pipeline::{
+        DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo, graphics::{
+            GraphicsPipelineCreateInfo, color_blend::{
                 AttachmentBlend, BlendFactor, ColorBlendAttachmentState, ColorBlendState,
-            },
-            input_assembly::InputAssemblyState,
-            multisample::MultisampleState,
-            rasterization::RasterizationState,
-            subpass::PipelineSubpassType,
-            vertex_input::{Vertex, VertexDefinition},
-            viewport::{Scissor, Viewport, ViewportState},
-            GraphicsPipelineCreateInfo,
-        },
-        DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout,
-        PipelineShaderStageCreateInfo,
-    },
-    render_pass::{Framebuffer, Subpass},
-    shader::ShaderStages,
-    swapchain::{Surface, Swapchain},
-    DeviceSize,
+            }, input_assembly::InputAssemblyState, multisample::MultisampleState, rasterization::RasterizationState, subpass::PipelineSubpassType, vertex_input::{Vertex, VertexDefinition}, viewport::{Scissor, Viewport, ViewportState}
+        }
+    }, render_pass::{Framebuffer, Subpass}, shader::ShaderStages, swapchain::{Surface, Swapchain}
 };
 use vulkano_taskgraph::{
     command_buffer::{BufferImageCopy, CopyBufferToImageInfo, RecordingCommandBuffer},
@@ -80,9 +54,6 @@ type Index = u32;
 
 const VERTEX_ALIGN: DeviceAlignment = DeviceAlignment::of::<EpaintVertex>();
 const INDEX_ALIGN: DeviceAlignment = DeviceAlignment::of::<Index>();
-
-type VertexBuffer = Subbuffer<[egui::epaint::Vertex]>;
-type IndexBuffer = Subbuffer<[u32]>;
 
 /// Should match vertex definition of egui
 #[repr(C)]
@@ -150,7 +121,8 @@ pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
     shapes: Vec<egui::epaint::ClippedShape>,
     textures_delta: egui::TexturesDelta,
 
-    vertex_index_buffer: Arc<Buffer>,
+    vertex_buffer_ids: Vec<Id<Buffer>>,
+    index_buffer_ids: Vec<Id<Buffer>>,
 
     font_sampler: Arc<Sampler>,
     font_sampler_id: Option<SamplerId>,
@@ -219,24 +191,57 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             None
         };
 
-        let vertex_index_buffer = Buffer::new(
-            resources.memory_allocator(),
-            &BufferCreateInfo {
-                usage: BufferUsage::INDEX_BUFFER | BufferUsage::VERTEX_BUFFER,
+        let flight = resources.flight(flight_id).unwrap();
+        let frames_in_flight = flight.frame_count();
+
+        let create_buffer_ids = |
+            create_info,
+            allocation_info,
+            layout,
+        | {
+            let mut buffer_ids = vec![];
+            for _ in 0..frames_in_flight {
+                let buffer_id = resources.create_buffer(
+                    &create_info,
+                    &allocation_info,
+                    layout
+                ).unwrap();
+                buffer_ids.push(buffer_id);
+            }
+            buffer_ids
+        };
+
+        let vertex_buffer_ids = create_buffer_ids(
+            BufferCreateInfo {
+                usage: BufferUsage::VERTEX_BUFFER,
                 ..Default::default()
             },
-            &AllocationCreateInfo {
+            AllocationCreateInfo {
                 memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
             DeviceLayout::from_size_alignment(
-                INDEX_BUFFER_SIZE + VERTEX_BUFFER_SIZE,
-                VERTEX_ALIGN.max(INDEX_ALIGN).into(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
+                VERTEX_BUFFER_SIZE,
+                VERTEX_ALIGN.into(),
+            ).unwrap(),
+        );
+
+        let index_buffer_ids = create_buffer_ids(
+            BufferCreateInfo {
+                usage: BufferUsage::INDEX_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            DeviceLayout::from_size_alignment(
+                INDEX_BUFFER_SIZE,
+                INDEX_ALIGN.into(),
+            ).unwrap(),
+        );
 
         let (descriptor_set_allocator, descriptor_set_layout, texture_descriptor_sets) =
             if !use_bindless {
@@ -280,7 +285,8 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             shapes: vec![],
             textures_delta: Default::default(),
 
-            vertex_index_buffer,
+            vertex_buffer_ids,
+            index_buffer_ids,
 
             font_sampler,
             font_sampler_id,
@@ -769,8 +775,9 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     /// None if no vertices or no indices.
     fn upload_meshes(
         &self,
+        task_context: &mut TaskContext<'_>,
         clipped_meshes: &[ClippedPrimitive],
-    ) -> Option<(VertexBuffer, IndexBuffer)> {
+    ) -> Option<(Id<Buffer>, Id<Buffer>)> {
         // Iterator over only the meshes, no user callbacks.
         let meshes = clipped_meshes.iter().filter_map(|mesh| match &mesh.primitive {
             Primitive::Mesh(m) => Some(m),
@@ -778,63 +785,46 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         });
 
         // Calculate counts of each mesh, and total bytes for combined data
-        let (total_vertices, total_size_bytes) = {
-            let mut total_vertices = 0;
-            let mut total_indices = 0;
+        let mut total_vertices = 0;
+        let mut total_indices = 0;
 
-            for mesh in meshes.clone() {
-                total_vertices += mesh.vertices.len();
-                total_indices += mesh.indices.len();
-            }
-            if total_indices == 0 || total_vertices == 0 {
-                return None;
-            }
-
-            let total_size_bytes = total_vertices * std::mem::size_of::<EpaintVertex>()
-                + total_indices * std::mem::size_of::<Index>();
-            (
-                total_vertices,
-                // Infallible! Checked above.
-                u64::try_from(total_size_bytes).unwrap(),
-            )
-        };
-
-        assert!(total_size_bytes <= self.vertex_index_buffer.size());
-
-        // Allocate a buffer which can hold both packed arrays:
-        let buffer = Subbuffer::new(self.vertex_index_buffer.clone());
+        for mesh in meshes.clone() {
+            total_vertices += mesh.vertices.len();
+            total_indices += mesh.indices.len();
+        }
+        if total_indices == 0 || total_vertices == 0 {
+            return None;
+        }
 
         // We must put the items with stricter align *first* in the packed buffer.
         // Correct at time of writing, but assert in case that changes.
         assert!(VERTEX_ALIGN >= INDEX_ALIGN);
-        let (vertices, indices) = {
-            let partition_bytes =
-                total_vertices as u64 * std::mem::size_of::<EpaintVertex>() as u64;
-            (
-                // Slice the start as vertices
-                buffer.clone().slice(..partition_bytes).reinterpret::<[EpaintVertex]>(),
-                // Take the rest, reinterpret as indices.
-                buffer.slice(partition_bytes..).reinterpret::<[Index]>(),
-            )
-        };
 
-        // We have to upload in two mapping steps to avoid trivial but ugly unsafe.
-        {
-            let mut vertex_write = vertices.write().unwrap();
-            vertex_write
-                .iter_mut()
-                .zip(meshes.clone().flat_map(|m| &m.vertices).copied())
-                .for_each(|(into, from)| *into = from);
-        }
-        {
-            let mut index_write = indices.write().unwrap();
-            index_write
-                .iter_mut()
-                .zip(meshes.flat_map(|m| &m.indices).copied())
-                .for_each(|(into, from)| *into = from);
-        }
+        let frame = task_context.current_frame_index() as usize;
 
-        Some((vertices, indices))
+        let vertex_buffer = self.vertex_buffer_ids[frame];
+        let vertices = task_context.write_buffer::<[EpaintVertex]>(
+            vertex_buffer,
+            0..(total_vertices * size_of::<EpaintVertex>()) as u64,
+        ).unwrap();
+
+        vertices
+            .iter_mut()
+            .zip(meshes.clone().flat_map(|m| &m.vertices).copied())
+            .for_each(|(into, from)| *into = from);
+
+        let index_buffer = self.index_buffer_ids[frame];
+        let indices = task_context.write_buffer::<[Index]>(
+            self.index_buffer_ids[frame],
+            0..(total_indices * size_of::<Index>()) as u64,
+        ).unwrap();
+
+        indices
+            .iter_mut()
+            .zip(meshes.flat_map(|m| &m.indices).copied())
+            .for_each(|(into, from)| *into = from);
+
+        Some((vertex_buffer, index_buffer))
     }
 }
 
@@ -951,7 +941,10 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
         let screen_size = [extent[0] as f32 / scale_factor, extent[1] as f32 / scale_factor];
         let output_in_linear_colorspace = egui_system.output_in_linear_colorspace.into();
 
-        let mesh_buffers = egui_system.upload_meshes(clipped_meshes);
+        let mesh_buffers = egui_system.upload_meshes(
+            task_context,
+            clipped_meshes,
+        );
 
         // Current position of renderbuffers, advances as meshes are consumed.
         let mut vertex_cursor = 0;
@@ -983,7 +976,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
                         needs_full_rebind = false;
 
                         // Bind combined meshes.
-                        let Some((vertices, indices)) = mesh_buffers.clone() else {
+                        let Some((vertex_buffer, index_buffer)) = mesh_buffers.clone() else {
                             // Only None if there are no mesh calls, but here we are in a mesh call!
                             unreachable!()
                         };
@@ -995,20 +988,8 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
                         builder.bind_pipeline_graphics(pipeline)?;
                         
                         builder
-                            .as_raw()
-                            .bind_index_buffer(
-                                &indices.buffer(),
-                                indices.offset(),
-                                None,//indices.size(),
-                                vulkano::buffer::IndexType::U32,
-                            )?
-                            .bind_vertex_buffers(
-                                0,
-                                &[vertices.buffer()],
-                                &[vertices.offset()],
-                                &[vertices.size()],
-                                &[size_of::<EguiVertex>() as u64]
-                            )?;
+                            .bind_index_buffer(index_buffer, 0, None, IndexType::U32)?
+                            .bind_vertex_buffers(0, &[vertex_buffer], &[0], &[], &[])?;
                     }
                     // Find and bind image, if different.
                     if current_texture != Some(mesh.texture_id) {
