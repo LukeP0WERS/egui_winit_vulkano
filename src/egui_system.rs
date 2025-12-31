@@ -311,6 +311,15 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         virtual_swapchain_id: Id<Swapchain>,
         virtual_framebuffer_id: Id<Framebuffer>,
     ) -> NodeId {
+
+        for (vertex_id, index_id) in self.vertex_buffer_ids
+            .iter()
+            .zip(&self.index_buffer_ids)
+        {
+            task_graph.add_host_buffer_access(*vertex_id, HostAccessType::Write);
+            task_graph.add_host_buffer_access(*index_id, HostAccessType::Read);
+        }
+
         // Initialize RenderEguiTask
         let mut task_node_builder = task_graph.create_task_node(
             "Render Egui",
