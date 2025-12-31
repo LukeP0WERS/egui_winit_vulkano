@@ -317,7 +317,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             .zip(&self.index_buffer_ids)
         {
             task_graph.add_host_buffer_access(*vertex_id, HostAccessType::Write);
-            task_graph.add_host_buffer_access(*index_id, HostAccessType::Read);
+            task_graph.add_host_buffer_access(*index_id, HostAccessType::Write);
         }
 
         // Initialize RenderEguiTask
