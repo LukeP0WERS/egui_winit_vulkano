@@ -312,17 +312,30 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         virtual_framebuffer_id: Id<Framebuffer>,
     ) -> NodeId {
         // Initialize RenderEguiTask
-        let node_id = task_graph
-            .create_task_node("Render Egui", QueueFamilyType::Graphics, RenderEguiTask::new())
+        let mut task_node_builder = task_graph.create_task_node(
+            "Render Egui",
+            QueueFamilyType::Graphics,
+            RenderEguiTask::new(),
+        );
+
+        for (vertex_id, index_id) in self.vertex_buffer_ids
+            .iter()
+            .zip(&self.index_buffer_ids)
+        {
+            task_node_builder
+                .buffer_access(*vertex_id, AccessTypes::VERTEX_ATTRIBUTE_READ)
+                .buffer_access(*index_id, AccessTypes::INDEX_READ);
+        }
+
+        task_node_builder
             .framebuffer(virtual_framebuffer_id)
             .color_attachment(
                 virtual_swapchain_id.current_image_id(),
                 AccessTypes::COLOR_ATTACHMENT_WRITE | AccessTypes::COLOR_ATTACHMENT_READ,
                 ImageLayoutType::Optimal,
                 &AttachmentInfo { ..Default::default() },
-            )
-            .build();
-
+            );
+        let node_id = task_node_builder.build();
         self.egui_node_id = Some(node_id);
 
         node_id
