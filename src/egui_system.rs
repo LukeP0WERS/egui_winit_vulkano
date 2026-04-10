@@ -40,9 +40,11 @@ use vulkano_taskgraph::{
 };
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
-const VERTICES_PER_QUAD: DeviceSize = 4;
-const VERTEX_BUFFER_SIZE: DeviceSize = 1024 * 1024 * VERTICES_PER_QUAD;
-const INDEX_BUFFER_SIZE: DeviceSize = 1024 * 1024 * 2;
+const MAX_QUADS: usize = 0x10000;
+const VERTICES_PER_QUAD: usize = 4;
+const INDICES_PER_QUAD: usize = 6;
+const MAX_VERTICES: usize = MAX_QUADS * VERTICES_PER_QUAD;
+const MAX_INDICES: usize = MAX_QUADS * INDICES_PER_QUAD;
 
 use egui::epaint::Vertex as EpaintVertex;
 
@@ -52,7 +54,7 @@ use crate::{immutable_texture_from_bytes, utils::ImageCreationError};
 
 type Index = u32;
 
-const VERTEX_ALIGN: DeviceAlignment = DeviceAlignment::of::<EpaintVertex>();
+const VERTEX_ALIGN: DeviceAlignment = DeviceAlignment::of::<EguiVertex>();
 const INDEX_ALIGN: DeviceAlignment = DeviceAlignment::of::<Index>();
 
 /// Should match vertex definition of egui
@@ -222,7 +224,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                 ..Default::default()
             },
             DeviceLayout::from_size_alignment(
-                VERTEX_BUFFER_SIZE,
+                (MAX_VERTICES * size_of::<EguiVertex>()) as u64,
                 VERTEX_ALIGN.into(),
             ).unwrap(),
         );
@@ -238,7 +240,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                 ..Default::default()
             },
             DeviceLayout::from_size_alignment(
-                INDEX_BUFFER_SIZE,
+                (MAX_INDICES * size_of::<Index>()) as u64,
                 INDEX_ALIGN.into(),
             ).unwrap(),
         );
@@ -827,9 +829,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let vertex_buffer = self.vertex_buffer_ids[frame];
         let vertices = task_context.write_buffer::<[EpaintVertex]>(
             vertex_buffer,
-            0..(
-                (total_vertices * size_of::<EpaintVertex>()) as u64
-            ).min(VERTEX_BUFFER_SIZE as u64),
+            0..(total_vertices.min(MAX_VERTICES) * size_of::<EpaintVertex>()) as u64
         ).unwrap();
 
         vertices
@@ -840,9 +840,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let index_buffer = self.index_buffer_ids[frame];
         let indices = task_context.write_buffer::<[Index]>(
             self.index_buffer_ids[frame],
-            0..(
-                (total_indices * size_of::<Index>()) as u64
-            ).min(INDEX_BUFFER_SIZE as u64),
+            0..(total_indices.min(MAX_INDICES) * size_of::<Index>()) as u64,
         ).unwrap();
 
         indices
