@@ -827,7 +827,9 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let vertex_buffer = self.vertex_buffer_ids[frame];
         let vertices = task_context.write_buffer::<[EpaintVertex]>(
             vertex_buffer,
-            0..(total_vertices * size_of::<EpaintVertex>()) as u64,
+            0..(
+                (total_vertices * size_of::<EpaintVertex>()) as u64
+            ).min(VERTEX_BUFFER_SIZE as u64),
         ).unwrap();
 
         vertices
@@ -838,7 +840,9 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let index_buffer = self.index_buffer_ids[frame];
         let indices = task_context.write_buffer::<[Index]>(
             self.index_buffer_ids[frame],
-            0..(total_indices * size_of::<Index>()) as u64,
+            0..(
+                (total_indices * size_of::<Index>()) as u64
+            ).min(INDEX_BUFFER_SIZE as u64),
         ).unwrap();
 
         indices
