@@ -11,7 +11,7 @@ use std::{marker::PhantomData, ops::Range, sync::Arc};
 
 use egui::{ahash::AHashMap, epaint::Primitive, ClippedPrimitive, Rect, TexturesDelta};
 use vulkano::{
-    DeviceSize, buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, IndexType}, descriptor_set::{
+    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, IndexType}, descriptor_set::{
         DescriptorImageInfo, DescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator, layout::{
             DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
             DescriptorType,
@@ -110,6 +110,7 @@ pub trait RenderEguiWorld<W: 'static + RenderEguiWorld<W> + ?Sized> {
 pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
     queue: Arc<Queue>,
     resources: Arc<Resources>,
+    memory_allocator: Arc<dyn MemoryAllocator>,
     flight_id: Id<Flight>,
 
     use_bindless: bool,
@@ -277,6 +278,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         Self {
             queue: queue.clone(),
             resources: resources.clone(),
+            memory_allocator: memory_allocator.clone(),
             flight_id,
 
             debug_utils,
@@ -580,19 +582,18 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             (false, existing_image.clone())
         } else {
             // Otherwise save the newly created image
-            let new_image_id = self
-                .resources
-                .create_image(
-                    &ImageCreateInfo {
-                        image_type: ImageType::Dim2d,
-                        format,
-                        extent,
-                        usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
-                        ..Default::default()
-                    },
-                    &AllocationCreateInfo::default(),
-                )
-                .map_err(ImageCreationError::AllocateImage)?;
+            let new_image = Image::new(
+                &self.memory_allocator,
+                &ImageCreateInfo {
+                    image_type: ImageType::Dim2d,
+                    format,
+                    extent,
+                    usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
+                    ..Default::default()
+                },
+                &AllocationCreateInfo::default(),
+            ).map_err(ImageCreationError::AllocateImage)?;
+            let new_image_id = self.resources.add_image(new_image);
 
             //Swizzle packed font images up to a full premul white.
             let component_mapping = match format {
@@ -686,6 +687,8 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                         .unwrap();
                 }
 
+                builder.destroy_object(buffer_id);
+
                 Ok(())
             },
             [(buffer_id, HostAccessType::Write)],
@@ -717,19 +720,18 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             // Nothing to upload!
             return;
         };
-        let buffer_id = self
-            .resources
-            .create_buffer(
-                &BufferCreateInfo { usage: BufferUsage::TRANSFER_SRC, ..Default::default() },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                // Bytes, align of one, infallible.
-                DeviceLayout::new(total_size_bytes, DeviceAlignment::MIN).unwrap(),
-            )
-            .unwrap();
+        let buffer = Buffer::new(
+            &self.memory_allocator,
+            &BufferCreateInfo { usage: BufferUsage::TRANSFER_SRC, ..Default::default() },
+            &AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            // Bytes, align of one, infallible.
+            DeviceLayout::new(total_size_bytes, DeviceAlignment::MIN).unwrap(),
+        ).unwrap();
+        let buffer_id = self.resources.add_buffer(buffer);
 
         // Keep track of where to write the next image to into the staging buffer.
         let mut past_buffer_end = 0;
