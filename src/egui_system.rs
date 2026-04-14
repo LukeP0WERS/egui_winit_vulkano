@@ -22,7 +22,7 @@ use vulkano::{
             SamplerCreateInfo, SamplerMipmapMode,
         }, view::{ImageView, ImageViewCreateInfo}
     }, instance::debug::DebugUtilsLabel, memory::{
-        DeviceAlignment, allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter}
+        DeviceAlignment, allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocatePreference, MemoryAllocator, MemoryTypeFilter}
     }, pipeline::{
         DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo, graphics::{
             GraphicsPipelineCreateInfo, color_blend::{
@@ -605,7 +605,10 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                 usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
                 ..Default::default()
             };
-            let allocation_info = &AllocationCreateInfo::default();
+            let allocation_info = &AllocationCreateInfo {
+                allocate_preference: MemoryAllocatePreference::NeverAllocate,
+                ..Default::default()
+            };
 
             let new_image_id = if let Some(allocator) = self.memory_allocator.as_ref() {
                 let new_image = Image::new(
