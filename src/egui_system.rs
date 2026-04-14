@@ -22,7 +22,7 @@ use vulkano::{
             SamplerCreateInfo, SamplerMipmapMode,
         }, view::{ImageView, ImageViewCreateInfo}
     }, instance::debug::DebugUtilsLabel, memory::{
-        DeviceAlignment, allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter}
+        DeviceAlignment, allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter, StandardMemoryAllocator}
     }, pipeline::{
         DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo, graphics::{
             GraphicsPipelineCreateInfo, color_blend::{
@@ -110,7 +110,7 @@ pub trait RenderEguiWorld<W: 'static + RenderEguiWorld<W> + ?Sized> {
 pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
     queue: Arc<Queue>,
     resources: Arc<Resources>,
-    memory_allocator: Arc<dyn MemoryAllocator>,
+    memory_allocator: Option<Arc<StandardMemoryAllocator>>,
     flight_id: Id<Flight>,
 
     use_bindless: bool,
@@ -148,7 +148,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         surface: &Arc<Surface>,
         queue: &Arc<Queue>,
         resources: &Arc<Resources>,
-        memory_allocator: &Arc<impl MemoryAllocator>,
+        memory_allocator: Option<&Arc<StandardMemoryAllocator>>,
         flight_id: Id<Flight>,
         swapchain_format: Format,
         config: EguiSystemConfig,
@@ -205,13 +205,16 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         | {
             let mut buffer_ids = vec![];
             for _ in 0..frames_in_flight {
-                let buffer = Buffer::new(
-                    &memory_allocator,
-                    &create_info,
-                    &allocation_info,
-                    layout,
-                ).unwrap();
-                let buffer_id = resources.add_buffer(buffer);
+                let buffer_id = if let Some(allocator) = memory_allocator {
+                    let buffer = Buffer::new(
+                        allocator, &create_info, &allocation_info, layout,
+                    ).unwrap();
+                    resources.add_buffer(buffer)
+                } else {
+                    resources.create_buffer(
+                        &create_info, &allocation_info, layout
+                    ).unwrap()
+                };
                 buffer_ids.push(buffer_id);
             }
             buffer_ids
@@ -278,7 +281,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         Self {
             queue: queue.clone(),
             resources: resources.clone(),
-            memory_allocator: memory_allocator.clone(),
+            memory_allocator: memory_allocator.cloned(),
             flight_id,
 
             debug_utils,
@@ -378,10 +381,20 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
     /// Extracts the draw data for the frame, updates textures, and sends mesh primitive data required for rendering
     /// to [RenderEguiTask].
-    pub fn update_task_draw_data(&mut self, task_graph: &mut ExecutableTaskGraph<W>) {
+    /// 
+    /// A staging allocator can be optionally provided for the texture upload buffer to use.
+    /// If None is provided the vulkanos internal memory allocator will be used.
+    pub fn update_task_draw_data(
+        &mut self,
+        staging_allocator: Option<&Arc<impl MemoryAllocator>>,
+        task_graph: &mut ExecutableTaskGraph<W>,
+    ) {
         let (clipped_meshes, textures_delta) = self.extract_draw_data_at_frame_end();
 
-        self.update_textures(&textures_delta.set);
+        self.update_textures(
+            staging_allocator,
+            &textures_delta.set,
+        );
 
         for &id in &textures_delta.free {
             self.unregister_image(id);
@@ -582,18 +595,25 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             (false, existing_image.clone())
         } else {
             // Otherwise save the newly created image
-            let new_image = Image::new(
-                &self.memory_allocator,
-                &ImageCreateInfo {
-                    image_type: ImageType::Dim2d,
-                    format,
-                    extent,
-                    usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo::default(),
-            ).map_err(ImageCreationError::AllocateImage)?;
-            let new_image_id = self.resources.add_image(new_image);
+
+            let create_info = &ImageCreateInfo {
+                image_type: ImageType::Dim2d,
+                format,
+                extent,
+                usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
+                ..Default::default()
+            };
+            let allocation_info = &AllocationCreateInfo::default();
+
+            let new_image_id = if let Some(allocator) = self.memory_allocator.as_ref() {
+                let new_image = Image::new(
+                    allocator, create_info, allocation_info,
+                ).map_err(ImageCreationError::AllocateImage)?;
+                self.resources.add_image(new_image)
+            } else {
+                self.resources.create_image(create_info, allocation_info)
+                    .map_err(ImageCreationError::AllocateImage)?
+            };
 
             //Swizzle packed font images up to a full premul white.
             let component_mapping = match format {
@@ -710,7 +730,14 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     }
 
     /// Write the entire texture delta for this frame.
-    pub fn update_textures(&mut self, sets: &[(egui::TextureId, egui::epaint::ImageDelta)]) {
+    /// 
+    /// A staging allocator can be optionally provided for the texture upload buffer to use.
+    /// If None is provided the vulkanos internal memory allocator will be used.
+    pub fn update_textures(
+        &mut self,
+        staging_allocator: Option<&Arc<impl MemoryAllocator>>,
+        sets: &[(egui::TextureId, egui::epaint::ImageDelta)],
+    ) {
         // Allocate enough memory to upload every delta at once.
         let total_size_bytes =
             sets.iter().map(|(_, set)| self.image_size_bytes(set)).sum::<usize>() * 4;
@@ -720,18 +747,35 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             // Nothing to upload!
             return;
         };
-        let buffer = Buffer::new(
-            &self.memory_allocator,
-            &BufferCreateInfo { usage: BufferUsage::TRANSFER_SRC, ..Default::default() },
-            &AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+
+        let buffer_id = {
+            let create_info = &BufferCreateInfo {
+                usage: BufferUsage::TRANSFER_SRC,
+                ..Default::default()
+            };
+            let allocation_info = &AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
-            },
-            // Bytes, align of one, infallible.
-            DeviceLayout::new(total_size_bytes, DeviceAlignment::MIN).unwrap(),
-        ).unwrap();
-        let buffer_id = self.resources.add_buffer(buffer);
+            };
+            let layout = DeviceLayout::new(total_size_bytes, DeviceAlignment::MIN).unwrap();
+
+            if let Some(staging_allocator) = staging_allocator {
+                let buffer = Buffer::new(
+                    staging_allocator,
+                    create_info,
+                    allocation_info,
+                    layout,
+                ).unwrap();
+                self.resources.add_buffer(buffer)
+            } else {
+                self.resources.create_buffer(
+                    create_info,
+                    allocation_info,
+                    layout,
+                ).unwrap()
+            }
+        };
 
         // Keep track of where to write the next image to into the staging buffer.
         let mut past_buffer_end = 0;
