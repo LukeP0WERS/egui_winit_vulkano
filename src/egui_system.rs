@@ -147,7 +147,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         surface: &Arc<Surface>,
         queue: &Arc<Queue>,
         resources: &Arc<Resources>,
-        memory_allocator: Arc<impl MemoryAllocator>,
+        memory_allocator: &Arc<impl MemoryAllocator>,
         flight_id: Id<Flight>,
         swapchain_format: Format,
         config: EguiSystemConfig,
