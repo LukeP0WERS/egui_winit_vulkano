@@ -22,7 +22,7 @@ use vulkano::{
             SamplerCreateInfo, SamplerMipmapMode,
         }, view::{ImageView, ImageViewCreateInfo}
     }, instance::debug::DebugUtilsLabel, memory::{
-        DeviceAlignment, allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter}
+        DeviceAlignment, allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter}
     }, pipeline::{
         DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo, graphics::{
             GraphicsPipelineCreateInfo, color_blend::{
