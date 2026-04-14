@@ -147,6 +147,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         surface: &Arc<Surface>,
         queue: &Arc<Queue>,
         resources: &Arc<Resources>,
+        memory_allocator: Arc<impl MemoryAllocator>,
         flight_id: Id<Flight>,
         swapchain_format: Format,
         config: EguiSystemConfig,
@@ -203,11 +204,13 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         | {
             let mut buffer_ids = vec![];
             for _ in 0..frames_in_flight {
-                let buffer_id = resources.create_buffer(
+                let buffer = Buffer::new(
+                    &memory_allocator,
                     &create_info,
                     &allocation_info,
-                    layout
+                    layout,
                 ).unwrap();
+                let buffer_id = resources.add_buffer(buffer);
                 buffer_ids.push(buffer_id);
             }
             buffer_ids
