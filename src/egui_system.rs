@@ -22,7 +22,7 @@ use vulkano::{
             SamplerCreateInfo, SamplerMipmapMode,
         }, view::{ImageView, ImageViewCreateInfo}
     }, instance::debug::DebugUtilsLabel, memory::{
-        DeviceAlignment, allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter, StandardMemoryAllocator}
+        DeviceAlignment, allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter}
     }, pipeline::{
         DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo, graphics::{
             GraphicsPipelineCreateInfo, color_blend::{
@@ -110,7 +110,7 @@ pub trait RenderEguiWorld<W: 'static + RenderEguiWorld<W> + ?Sized> {
 pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
     queue: Arc<Queue>,
     resources: Arc<Resources>,
-    memory_allocator: Option<Arc<StandardMemoryAllocator>>,
+    memory_allocator: Option<Arc<dyn MemoryAllocator>>,
     flight_id: Id<Flight>,
 
     use_bindless: bool,
@@ -148,7 +148,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         surface: &Arc<Surface>,
         queue: &Arc<Queue>,
         resources: &Arc<Resources>,
-        memory_allocator: Option<&Arc<StandardMemoryAllocator>>,
+        memory_allocator: Option<&Arc<impl MemoryAllocator>>,
         flight_id: Id<Flight>,
         swapchain_format: Format,
         config: EguiSystemConfig,
@@ -281,8 +281,10 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         Self {
             queue: queue.clone(),
             resources: resources.clone(),
-            memory_allocator: memory_allocator.cloned(),
-            flight_id,
+            memory_allocator: memory_allocator.map(|x| {
+                x.clone().as_dyn()
+            }),
+           flight_id,
 
             debug_utils,
             use_bindless,
