@@ -22,7 +22,7 @@ use vulkano::{
             SamplerCreateInfo, SamplerMipmapMode,
         }, view::{ImageView, ImageViewCreateInfo}
     }, instance::debug::DebugUtilsLabel, memory::{
-        DeviceAlignment, allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocatePreference, MemoryAllocator, MemoryTypeFilter}
+        DeviceAlignment, allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter}
     }, pipeline::{
         DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo, graphics::{
             GraphicsPipelineCreateInfo, color_blend::{
@@ -32,11 +32,7 @@ use vulkano::{
     }, render_pass::{Framebuffer, Subpass}, shader::ShaderStages, swapchain::{Surface, Swapchain}
 };
 use vulkano_taskgraph::{
-    command_buffer::{BufferImageCopy, CopyBufferToImageInfo, RecordingCommandBuffer},
-    descriptor_set::{SampledImageId, SamplerId},
-    graph::{AttachmentInfo, ExecutableTaskGraph, NodeId, TaskGraph},
-    resource::{AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources},
-    Id, QueueFamilyType, Task, TaskContext, TaskResult,
+    Id, QueueFamilyType, Task, TaskContext, TaskResult, command_buffer::{BufferImageCopy, CopyBufferInfo, CopyBufferToImageInfo, RecordingCommandBuffer}, descriptor_set::{SampledImageId, SamplerId}, graph::{AttachmentInfo, ExecutableTaskGraph, NodeId, TaskGraph}, resource::{AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources}
 };
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
@@ -111,6 +107,7 @@ pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
     queue: Arc<Queue>,
     resources: Arc<Resources>,
     memory_allocator: Option<Arc<dyn MemoryAllocator>>,
+    staging_allocator: Option<Arc<dyn MemoryAllocator>>,
     flight_id: Id<Flight>,
 
     use_bindless: bool,
@@ -143,12 +140,20 @@ pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
 }
 
 impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
+    
+    /// Creates a new EguiSystem for rendering to the task graph.
+    /// 
+    /// `memory_allocator` can be optionally provided for long lived resource allocation.
+    /// 
+    /// `staging_allocator` can be used for temporary allocation of staging buffers.
+    /// A `BumpAllocator` works well here if its properly managed with the rest of your program.
     pub fn new(
         event_loop: &ActiveEventLoop,
         surface: &Arc<Surface>,
         queue: &Arc<Queue>,
         resources: &Arc<Resources>,
         memory_allocator: Option<&Arc<impl MemoryAllocator>>,
+        staging_allocator: Option<&Arc<impl MemoryAllocator>>,
         flight_id: Id<Flight>,
         swapchain_format: Format,
         config: EguiSystemConfig,
@@ -203,8 +208,12 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             allocation_info,
             layout,
         | {
+            let buffer_count = if staging_allocator.is_none() {
+                frames_in_flight
+            } else { 1 };
+
             let mut buffer_ids = vec![];
-            for _ in 0..frames_in_flight {
+            for _ in 0..buffer_count {
                 let buffer_id = if let Some(allocator) = memory_allocator {
                     let buffer = Buffer::new(
                         allocator, &create_info, &allocation_info, layout,
@@ -220,14 +229,20 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             buffer_ids
         };
 
+        let memory_type_filter = if staging_allocator.is_some() {
+            MemoryTypeFilter::PREFER_DEVICE
+        } else {
+            MemoryTypeFilter::PREFER_DEVICE
+                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE
+        };
+
         let vertex_buffer_ids = create_buffer_ids(
             BufferCreateInfo {
                 usage: BufferUsage::VERTEX_BUFFER,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                memory_type_filter,
                 ..Default::default()
             },
             DeviceLayout::from_size_alignment(
@@ -242,8 +257,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                 ..Default::default()
             },
             AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                memory_type_filter,
                 ..Default::default()
             },
             DeviceLayout::from_size_alignment(
@@ -281,10 +295,9 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         Self {
             queue: queue.clone(),
             resources: resources.clone(),
-            memory_allocator: memory_allocator.map(|x| {
-                x.clone().as_dyn()
-            }),
-           flight_id,
+            memory_allocator: memory_allocator.map(|x| x.clone().as_dyn()),
+            staging_allocator: staging_allocator.map(|x| x.clone().as_dyn()),
+            flight_id,
 
             debug_utils,
             use_bindless,
@@ -388,13 +401,11 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     /// If None is provided the vulkanos internal memory allocator will be used.
     pub fn update_task_draw_data(
         &mut self,
-        staging_allocator: Option<&Arc<impl MemoryAllocator>>,
         task_graph: &mut ExecutableTaskGraph<W>,
     ) {
         let (clipped_meshes, textures_delta) = self.extract_draw_data_at_frame_end();
 
         self.update_textures(
-            staging_allocator,
             &textures_delta.set,
         );
 
@@ -605,10 +616,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                 usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
                 ..Default::default()
             };
-            let allocation_info = &AllocationCreateInfo {
-                allocate_preference: MemoryAllocatePreference::NeverAllocate,
-                ..Default::default()
-            };
+            let allocation_info = &AllocationCreateInfo::default();
 
             let new_image_id = if let Some(allocator) = self.memory_allocator.as_ref() {
                 let new_image = Image::new(
@@ -712,8 +720,6 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                         .unwrap();
                 }
 
-                builder.destroy_object(buffer_id);
-
                 Ok(())
             },
             [(buffer_id, HostAccessType::Write)],
@@ -735,12 +741,8 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     }
 
     /// Write the entire texture delta for this frame.
-    /// 
-    /// A staging allocator can be optionally provided for the texture upload buffer to use.
-    /// If None is provided the vulkanos internal memory allocator will be used.
     pub fn update_textures(
         &mut self,
-        staging_allocator: Option<&Arc<impl MemoryAllocator>>,
         sets: &[(egui::TextureId, egui::epaint::ImageDelta)],
     ) {
         // Allocate enough memory to upload every delta at once.
@@ -765,7 +767,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             };
             let layout = DeviceLayout::new(total_size_bytes, DeviceAlignment::MIN).unwrap();
 
-            if let Some(staging_allocator) = staging_allocator {
+            if let Some(staging_allocator) = self.staging_allocator.as_ref() {
                 let buffer = Buffer::new(
                     staging_allocator,
                     create_info,
@@ -795,6 +797,15 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             if let Some(err) = self.update_texture_within(*id, delta, buffer_id, range).err() {
                 panic!("Failed to create new image for id: {:?}, with error: {:?}", id, err);
             }
+        }
+
+        let mut batch = self.resources.create_deferred_batch();
+
+        batch.destroy_buffer(buffer_id);
+
+        // SAFETY: The buffer isn't used by any other flights. 
+        unsafe {
+            batch.enqueue_with_flights([self.flight_id]);
         }
     }
 
@@ -853,6 +864,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     /// None if no vertices or no indices.
     fn upload_meshes(
         &self,
+        builder: &mut RecordingCommandBuffer<'_>,
         task_context: &mut TaskContext<'_>,
         clipped_meshes: &[ClippedPrimitive],
     ) -> Option<(Id<Buffer>, Id<Buffer>)> {
@@ -878,12 +890,59 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         // Correct at time of writing, but assert in case that changes.
         assert!(VERTEX_ALIGN >= INDEX_ALIGN);
 
-        let frame = task_context.current_frame_index() as usize;
+        let vertex_size = total_vertices.min(MAX_VERTICES) * size_of::<EpaintVertex>();
+        let index_size = total_indices.min(MAX_INDICES) * size_of::<Index>();
 
-        let vertex_buffer = self.vertex_buffer_ids[frame];
+        let (
+            upload_vertex_id,
+            upload_index_id,
+        ) = if let Some(staging_allocator) = &self.staging_allocator {
+            let allocation_info = AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            };
+            let staging_vertex_buffer = Buffer::new(
+                &staging_allocator,
+                &BufferCreateInfo {
+                    usage: BufferUsage::VERTEX_BUFFER,
+                    ..Default::default()
+                },
+                &allocation_info,
+                DeviceLayout::from_size_alignment(
+                    vertex_size as u64,
+                    VERTEX_ALIGN.into(),
+                ).unwrap(),
+            ).unwrap();
+
+            let staging_index_buffer = Buffer::new(
+                &staging_allocator,
+                &BufferCreateInfo {
+                    usage: BufferUsage::INDEX_BUFFER,
+                    ..Default::default()
+                },
+                &allocation_info,
+                DeviceLayout::from_size_alignment(
+                    index_size as u64,
+                    INDEX_ALIGN.into(),
+                ).unwrap(),
+            ).unwrap();
+
+            (
+                self.resources.add_buffer(staging_vertex_buffer),
+                self.resources.add_buffer(staging_index_buffer), 
+            )
+        } else {
+            let frame = task_context.current_frame_index() as usize;
+            (
+                self.vertex_buffer_ids[frame],
+                self.index_buffer_ids[frame],
+            )
+        };
+
         let vertices = task_context.write_buffer::<[EpaintVertex]>(
-            vertex_buffer,
-            0..(total_vertices.min(MAX_VERTICES) * size_of::<EpaintVertex>()) as u64
+            upload_vertex_id,
+            0..vertex_size as u64,
         ).unwrap();
 
         vertices
@@ -891,10 +950,9 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             .zip(meshes.clone().flat_map(|m| &m.vertices).copied())
             .for_each(|(into, from)| *into = from);
 
-        let index_buffer = self.index_buffer_ids[frame];
         let indices = task_context.write_buffer::<[Index]>(
-            self.index_buffer_ids[frame],
-            0..(total_indices.min(MAX_INDICES) * size_of::<Index>()) as u64,
+            upload_index_id,
+            0..index_size as u64,
         ).unwrap();
 
         indices
@@ -902,7 +960,33 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             .zip(meshes.flat_map(|m| &m.indices).copied())
             .for_each(|(into, from)| *into = from);
 
-        Some((vertex_buffer, index_buffer))
+        if self.staging_allocator.is_some() {
+            let vertex_buffer = self.vertex_buffer_ids[0];
+            let index_buffer = self.index_buffer_ids[0];
+
+            unsafe {
+                builder.copy_buffer(&CopyBufferInfo {
+                    src_buffer: upload_vertex_id,
+                    dst_buffer: vertex_buffer,
+                    ..Default::default()
+                }).unwrap();
+                
+                builder.copy_buffer(&CopyBufferInfo {
+                    src_buffer: upload_index_id,
+                    dst_buffer: index_buffer,
+                    ..Default::default()
+                }).unwrap();
+
+                builder.destroy_objects([
+                    upload_vertex_id,
+                    upload_index_id,
+                ]);
+            }
+
+            Some((vertex_buffer, index_buffer))
+        } else {
+            Some((upload_vertex_id, upload_index_id))
+        }
     }
 }
 
@@ -1020,6 +1104,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
         let output_in_linear_colorspace = egui_system.output_in_linear_colorspace.into();
 
         let mesh_buffers = egui_system.upload_meshes(
+            builder,
             task_context,
             clipped_meshes,
         );
