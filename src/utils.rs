@@ -108,9 +108,6 @@ pub fn immutable_texture_from_bytes<W: 'static + ?Sized>(
                 })
                 .unwrap();
 
-            // Queue destruction of staging buffer
-            builder.destroy_object(texture_data_buffer);
-
             Ok(())
         },
         [(texture_data_buffer, HostAccessType::Write)],
@@ -118,6 +115,15 @@ pub fn immutable_texture_from_bytes<W: 'static + ?Sized>(
         [(texture_id, AccessTypes::COPY_TRANSFER_WRITE, ImageLayoutType::Optimal)],
     ) } 
         .map_err(ImageCreationError::ExecuteError)?;
+    
+    // Queue destruction of staging buffer
+    let mut batch = resources.create_deferred_batch();
+    batch.destroy_buffer(texture_data_buffer);
+
+    // SAFETY: The buffer isn't used by any other flights. 
+    unsafe {
+        batch.enqueue_with_flights([flight_id]);
+    }
 
     if staging_allocator.is_some() {
         // Wait to ensure the staging allocator is reset.
