@@ -146,7 +146,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     
     /// Creates a new EguiSystem for rendering to the task graph.
     /// 
-    /// `staging_allocator` can be optionally used for temporary allocation of staging buffers.
+    /// `staging_allocator` can be optionally provided for temporary allocation of staging buffers.
     /// A `BumpAllocator` works well here if its properly managed with the rest of your program.
     pub fn new(
         event_loop: &ActiveEventLoop,
@@ -722,6 +722,8 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         &mut self,
         sets: &[(egui::TextureId, egui::epaint::ImageDelta)],
     ) {
+        if sets.is_empty() { return; }
+
         // Allocate enough memory to upload every delta at once.
         let total_size_bytes =
             sets.iter().map(|(_, set)| self.image_size_bytes(set)).sum::<usize>() * 4;
@@ -776,13 +778,19 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             }
         }
 
+        // Queue destruction of staging buffer
         let mut batch = self.resources.create_deferred_batch();
-
         batch.destroy_buffer(buffer_id);
 
         // SAFETY: The buffer isn't used by any other flights. 
         unsafe {
             batch.enqueue_with_flights([self.flight_id]);
+        }
+
+        if self.staging_allocator.is_some() {
+            // Wait to ensure the staging allocator is reset.
+            let flight = self.resources.flight(self.flight_id).unwrap();
+            flight.wait(None).unwrap();
         }
     }
 

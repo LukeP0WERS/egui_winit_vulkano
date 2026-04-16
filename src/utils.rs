@@ -108,6 +108,7 @@ pub fn immutable_texture_from_bytes<W: 'static + ?Sized>(
                 })
                 .unwrap();
 
+            // Queue destruction of staging buffer
             builder.destroy_object(texture_data_buffer);
 
             Ok(())
@@ -117,6 +118,11 @@ pub fn immutable_texture_from_bytes<W: 'static + ?Sized>(
         [(texture_id, AccessTypes::COPY_TRANSFER_WRITE, ImageLayoutType::Optimal)],
     ) } 
         .map_err(ImageCreationError::ExecuteError)?;
+
+    if staging_allocator.is_some() {
+        // Wait to ensure the staging allocator is reset.
+        flight.wait(None).unwrap();
+    }
 
     Ok((texture_id, image_view))
 }
