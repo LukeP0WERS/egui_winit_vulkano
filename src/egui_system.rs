@@ -734,7 +734,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                 ..Default::default()
             };
             let allocation_info = &AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             };
