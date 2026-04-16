@@ -12,14 +12,9 @@ use std::sync::Arc;
 #[cfg(feature = "image")]
 use image::RgbaImage;
 use vulkano::{
-    buffer::{AllocateBufferError, BufferCreateInfo, BufferUsage},
-    device::Queue,
-    image::{
-        view::{ImageView, ImageViewCreateInfo},
-        AllocateImageError, Image, ImageCreateInfo, ImageType, ImageUsage,
-    },
-    memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
-    Validated, VulkanError,
+    Validated, VulkanError, buffer::{AllocateBufferError, Buffer, BufferCreateInfo, BufferUsage}, device::Queue, image::{
+        AllocateImageError, Image, ImageCreateInfo, ImageType, ImageUsage, view::{ImageView, ImageViewCreateInfo}
+    }, memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter}
 };
 use vulkano_taskgraph::{
     command_buffer::CopyBufferToImageInfo,
@@ -40,21 +35,41 @@ pub fn immutable_texture_from_bytes<W: 'static + ?Sized>(
     queue: &Arc<Queue>,
     resources: &Arc<Resources>,
     flight_id: Id<Flight>,
+    staging_allocator: Option<&Arc<dyn MemoryAllocator>>,
     byte_data: &[u8],
     dimensions: [u32; 2],
     format: vulkano::format::Format,
 ) -> Result<(Id<Image>, Arc<ImageView>), ImageCreationError> {
-    let texture_data_buffer = resources
-        .create_buffer(
-            &BufferCreateInfo { usage: BufferUsage::TRANSFER_SRC, ..Default::default() },
-            &AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            DeviceLayout::new_unsized::<[u8]>(byte_data.len() as u64).unwrap(),
-        )
-        .map_err(ImageCreationError::AllocateBuffer)?;
+    let texture_data_buffer = {
+        let buffer_create_info = BufferCreateInfo {
+            usage: BufferUsage::TRANSFER_SRC,
+            ..Default::default()
+        };
+        let allocation_info = AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            ..Default::default()
+        };
+        let device_layout = DeviceLayout::new_unsized::<[u8]>(
+            byte_data.len() as u64
+        ).unwrap();
+
+        if let Some(staging_allocator) = staging_allocator {
+            let texture_buffer = Buffer::new(
+                staging_allocator,
+                &buffer_create_info,
+                &allocation_info,
+                device_layout,
+            ).map_err(ImageCreationError::AllocateBuffer)?;
+            resources.add_buffer(texture_buffer)
+        } else {
+            resources.create_buffer(
+                &buffer_create_info,
+                &allocation_info,
+                device_layout,
+            ).map_err(ImageCreationError::AllocateBuffer)?
+        }
+    };
 
     let texture_id = resources
         .create_image(
@@ -93,6 +108,8 @@ pub fn immutable_texture_from_bytes<W: 'static + ?Sized>(
                 })
                 .unwrap();
 
+            builder.destroy_object(texture_data_buffer);
+
             Ok(())
         },
         [(texture_data_buffer, HostAccessType::Write)],
@@ -109,6 +126,7 @@ pub fn immutable_texture_from_file<W: 'static + ?Sized>(
     queue: &Arc<Queue>,
     resources: &Arc<Resources>,
     flight_id: Id<Flight>,
+    staging_allocator: Option<&Arc<dyn MemoryAllocator>>,
     file_bytes: &[u8],
     format: vulkano::format::Format,
 ) -> Result<(Id<Image>, Arc<ImageView>), ImageCreationError> {
@@ -136,6 +154,7 @@ pub fn immutable_texture_from_file<W: 'static + ?Sized>(
         queue,
         resources,
         flight_id,
+        staging_allocator,
         &rgba,
         [dimensions.0, dimensions.1],
         format,

@@ -111,6 +111,7 @@ pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
     queue: Arc<Queue>,
     resources: Arc<Resources>,
     flight_id: Id<Flight>,
+    staging_allocator: Option<Arc<dyn MemoryAllocator>>,
 
     use_bindless: bool,
     debug_utils: Option<DebugUtilsLabel>,
@@ -144,12 +145,16 @@ pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
 impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     
     /// Creates a new EguiSystem for rendering to the task graph.
+    /// 
+    /// `staging_allocator` can be optionally used for temporary allocation of staging buffers.
+    /// A `BumpAllocator` works well here if its properly managed with the rest of your program.
     pub fn new(
         event_loop: &ActiveEventLoop,
         surface: &Arc<Surface>,
         queue: &Arc<Queue>,
         resources: &Arc<Resources>,
         flight_id: Id<Flight>,
+        staging_allocator: Option<&Arc<impl MemoryAllocator>>,
         swapchain_format: Format,
         config: EguiSystemConfig,
     ) -> Self {
@@ -275,6 +280,9 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             queue: queue.clone(),
             resources: resources.clone(),
             flight_id,
+            staging_allocator: staging_allocator.map(|x| {
+                x.clone().as_dyn()
+            }),
 
             debug_utils,
             use_bindless,
@@ -373,18 +381,13 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
     /// Extracts the draw data for the frame, updates textures, and sends mesh primitive data required for rendering
     /// to [RenderEguiTask].
-    /// 
-    /// A staging allocator can be optionally provided for the texture upload buffer to use.
-    /// If None is provided the vulkanos internal memory allocator will be used.
     pub fn update_task_draw_data(
         &mut self,
-        staging_allocator: Option<&Arc<impl MemoryAllocator>>,
         task_graph: &mut ExecutableTaskGraph<W>,
     ) {
         let (clipped_meshes, textures_delta) = self.extract_draw_data_at_frame_end();
 
         self.update_textures(
-            staging_allocator,
             &textures_delta.set,
         );
 
@@ -447,6 +450,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             &self.queue,
             &self.resources,
             self.flight_id,
+            self.staging_allocator.as_ref(),
             image_file_bytes,
             format,
         )?;
@@ -469,6 +473,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             &self.queue,
             &self.resources,
             self.flight_id,
+            self.staging_allocator.as_ref(),
             image_byte_data,
             dimensions,
             format,
@@ -715,7 +720,6 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     /// Write the entire texture delta for this frame.
     pub fn update_textures(
         &mut self,
-        staging_allocator: Option<&Arc<impl MemoryAllocator>>,
         sets: &[(egui::TextureId, egui::epaint::ImageDelta)],
     ) {
         // Allocate enough memory to upload every delta at once.
@@ -740,7 +744,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             };
             let layout = DeviceLayout::new(total_size_bytes, DeviceAlignment::MIN).unwrap();
 
-            if let Some(staging_allocator) = staging_allocator {
+            if let Some(staging_allocator) = self.staging_allocator.as_ref() {
                 let buffer = Buffer::new(
                     staging_allocator,
                     create_info,
