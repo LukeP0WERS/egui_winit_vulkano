@@ -22,7 +22,7 @@ use vulkano::{
             SamplerCreateInfo, SamplerMipmapMode,
         }, view::{ImageView, ImageViewCreateInfo}
     }, instance::debug::DebugUtilsLabel, memory::{
-        DeviceAlignment, allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocatePreference, MemoryAllocator, MemoryTypeFilter}
+        DeviceAlignment, allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter}
     }, pipeline::{
         DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo, graphics::{
             GraphicsPipelineCreateInfo, color_blend::{
@@ -144,11 +144,6 @@ pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
 impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     
     /// Creates a new EguiSystem for rendering to the task graph.
-    /// 
-    /// `memory_allocator` can be optionally provided for long lived resource allocation.
-    /// 
-    /// `staging_allocator` will be used for temporary allocation of staging buffers.
-    /// A `BumpAllocator` works well here if its properly managed with the rest of your program.
     pub fn new(
         event_loop: &ActiveEventLoop,
         surface: &Arc<Surface>,
@@ -210,16 +205,9 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         | {
             let mut buffer_ids = vec![];
             for _ in 0..frames_in_flight {
-                let buffer_id = if let Some(allocator) = memory_allocator {
-                    let buffer = Buffer::new(
-                        allocator, &create_info, &allocation_info, layout,
-                    ).unwrap();
-                    resources.add_buffer(buffer)
-                } else {
-                    resources.create_buffer(
-                        &create_info, &allocation_info, layout
-                    ).unwrap()
-                };
+                let buffer_id = resources.create_buffer(
+                    &create_info, &allocation_info, layout
+                ).unwrap();
                 buffer_ids.push(buffer_id);
             }
             buffer_ids
@@ -286,7 +274,6 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         Self {
             queue: queue.clone(),
             resources: resources.clone(),
-            staging_allocator: staging_allocator.map(|x| x.clone().as_dyn()),
             flight_id,
 
             debug_utils,
@@ -610,15 +597,8 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             };
             let allocation_info = &AllocationCreateInfo::default();
 
-            let new_image_id = if let Some(allocator) = self.memory_allocator.as_ref() {
-                let new_image = Image::new(
-                    allocator, create_info, allocation_info,
-                ).map_err(ImageCreationError::AllocateImage)?;
-                self.resources.add_image(new_image)
-            } else {
-                self.resources.create_image(create_info, allocation_info)
-                    .map_err(ImageCreationError::AllocateImage)?
-            };
+            let new_image_id = self.resources.create_image(create_info, allocation_info)
+                .map_err(ImageCreationError::AllocateImage)?;
 
             //Swizzle packed font images up to a full premul white.
             let component_mapping = match format {
