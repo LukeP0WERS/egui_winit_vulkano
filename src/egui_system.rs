@@ -9,7 +9,11 @@
 
 use std::{fmt::Debug, marker::PhantomData, ops::Range, sync::Arc};
 
-use egui::{ahash::AHashMap, epaint::Primitive, ClippedPrimitive, Rect, TexturesDelta};
+use egui::{
+    ahash::AHashMap,
+    epaint::{Primitive, Vertex as EpaintVertex},
+    ClippedPrimitive, Rect, TexturesDelta,
+};
 use vulkano::{
     buffer::{
         AllocateBufferError, Buffer, BufferContents, BufferCreateInfo, BufferUsage, IndexType,
@@ -68,19 +72,9 @@ use vulkano_taskgraph::{
 };
 use winit::{event_loop::ActiveEventLoop, raw_window_handle::HandleError, window::Window};
 
-const MAX_QUADS: usize = 0x10000;
-const VERTICES_PER_QUAD: usize = 4;
-const INDICES_PER_QUAD: usize = 6;
-const MAX_VERTICES: usize = MAX_QUADS * VERTICES_PER_QUAD;
-const MAX_INDICES: usize = MAX_QUADS * INDICES_PER_QUAD;
-
-use egui::epaint::Vertex as EpaintVertex;
-
 #[cfg(feature = "image")]
 use crate::image_utils::{immutable_texture_from_file, AlphaMode};
 use crate::{image_utils::ImageCreationError, immutable_texture_from_bytes};
-
-type Index = u32;
 
 const VERTEX_ALIGN: DeviceAlignment = DeviceAlignment::of::<EguiVertex>();
 const INDEX_ALIGN: DeviceAlignment = DeviceAlignment::of::<Index>();
@@ -97,17 +91,33 @@ pub struct EguiVertex {
     pub color: [u8; 4],
 }
 
+type Index = u32;
+
 pub struct EguiSystemConfig {
     /// When true the bindless system will be used for rendering as long as the bindless context
     /// exists for [Resources]. If not descriptor sets will be bound for the images instead.
     pub use_bindless: bool,
     /// Optional debug utils to be associated with the work done when rendering egui.
     pub debug_utils: Option<DebugUtilsLabel>,
+    /// Maximum number of vertices each vertex buffer must accommodate.
+    pub max_vertices: usize,
+    /// Maximum number of indices each index buffer must accommodate.
+    pub max_indices: usize,
 }
 
-impl Default for EguiSystemConfig {
-    fn default() -> Self {
-        Self { use_bindless: true, debug_utils: None }
+impl EguiSystemConfig {
+    const VERTICES_PER_QUAD: usize = 4;
+    const INDICES_PER_QUAD: usize = 6;
+
+    /// Derives EguiSystemConfig from a maximum number of quads.
+    /// - `max_quads`: e.g. 0x10000
+    pub fn from_max_quads(max_quads: usize) -> Self {
+        Self {
+            use_bindless: false,
+            debug_utils: None,
+            max_vertices: max_quads * Self::VERTICES_PER_QUAD,
+            max_indices: max_quads * Self::INDICES_PER_QUAD,
+        }
     }
 }
 
@@ -170,8 +180,7 @@ pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
     flight_id: Id<Flight>,
     staging_allocator: Option<Arc<dyn MemoryAllocator>>,
 
-    use_bindless: bool,
-    debug_utils: Option<DebugUtilsLabel>,
+    config: EguiSystemConfig,
     output_in_linear_colorspace: bool,
 
     pub egui_ctx: egui::Context,
@@ -218,7 +227,6 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         config: EguiSystemConfig,
     ) -> Result<Self, EguiSystemError> {
         let use_bindless = config.use_bindless && resources.bindless_context().is_some();
-        let debug_utils = config.debug_utils;
 
         let output_in_linear_colorspace =
             if let Some(numeric_format) = swapchain_format.numeric_format_color() {
@@ -299,7 +307,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                 ..Default::default()
             },
             DeviceLayout::from_size_alignment(
-                (MAX_VERTICES * size_of::<EguiVertex>()) as u64,
+                (config.max_vertices * size_of::<EguiVertex>()) as u64,
                 VERTEX_ALIGN.into(),
             )
             .unwrap(),
@@ -313,7 +321,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                 ..Default::default()
             },
             DeviceLayout::from_size_alignment(
-                (MAX_INDICES * size_of::<Index>()) as u64,
+                (config.max_indices * size_of::<Index>()) as u64,
                 INDEX_ALIGN.into(),
             )
             .unwrap(),
@@ -351,8 +359,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             flight_id,
             staging_allocator: staging_allocator.map(|x| x.clone().as_dyn()),
 
-            debug_utils,
-            use_bindless,
+            config,
             output_in_linear_colorspace,
 
             egui_ctx,
@@ -433,7 +440,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             .task_mut()
             .downcast_mut::<RenderEguiTask<W>>()
             .unwrap()
-            .create_pipeline(resources, device, &subpass, self.use_bindless)
+            .create_pipeline(resources, device, &subpass, self.config.use_bindless)
             .map_err(|err| EguiSystemError::Vulkan(err))?;
 
         Ok(())
@@ -479,7 +486,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let id = egui::TextureId::User(self.next_native_tex_id);
         self.next_native_tex_id += 1;
 
-        if !self.use_bindless {
+        if !self.config.use_bindless {
             if let EguiTexture::Raw { ref image_view, ref sampler } = egui_texture {
                 let descriptor_set = self
                     .sampled_image_descriptor_set(image_view, sampler)
@@ -573,7 +580,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
     /// Unregister user texture.
     pub fn unregister_image(&mut self, texture_id: egui::TextureId) {
-        if !self.use_bindless {
+        if !self.config.use_bindless {
             self.texture_descriptor_sets.as_mut().unwrap().remove(&texture_id);
         }
         self.texture_ids.remove(&texture_id);
@@ -584,7 +591,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         image_view: Arc<ImageView>,
         sampler: Arc<Sampler>,
     ) -> EguiTexture {
-        if self.use_bindless {
+        if self.config.use_bindless {
             let bcx = self.resources.bindless_context().unwrap();
 
             let sampled_image_id =
@@ -599,7 +606,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
     fn convert_egui_texture(&self, egui_texture: EguiTexture) -> EguiTexture {
         if let EguiTexture::Raw { ref image_view, ref sampler } = egui_texture {
-            if self.use_bindless {
+            if self.config.use_bindless {
                 let bcx = self.resources.bindless_context().unwrap();
 
                 let sampled_image_id =
@@ -611,7 +618,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                 egui_texture
             }
         } else {
-            assert!(self.use_bindless, "Bindless must be enabled for EguiSystem!");
+            assert!(self.config.use_bindless, "Bindless must be enabled for EguiSystem!");
 
             egui_texture
         }
@@ -622,7 +629,10 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         image_view: &Arc<ImageView>,
         sampler: &Arc<Sampler>,
     ) -> Result<Arc<DescriptorSet>, Validated<VulkanError>> {
-        assert!(!self.use_bindless, "Bindless must be disabled for descriptor sets to be created");
+        assert!(
+            !self.config.use_bindless,
+            "Bindless must be disabled for descriptor sets to be created"
+        );
 
         DescriptorSet::new(
             &self.descriptor_set_allocator.as_ref().unwrap().clone(),
@@ -710,7 +720,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             })
             .map_err(ImageCreationError::Vulkan)?;
 
-            let new_egui_texture = if self.use_bindless {
+            let new_egui_texture = if self.config.use_bindless {
                 let bcx = self.resources.bindless_context().unwrap();
 
                 let sampled_image_id =
@@ -794,7 +804,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         .map_err(|err| ImageCreationError::ExecuteError(err))?;
 
         if is_new_image {
-            if !self.use_bindless {
+            if !self.config.use_bindless {
                 if let EguiTexture::Raw { ref image_view, ref sampler } = new_egui_texture {
                     let descriptor_set = self
                         .sampled_image_descriptor_set(image_view, sampler)
@@ -965,7 +975,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let vertex_buffer = self.vertex_buffer_ids[frame];
         let vertices = task_context.write_buffer::<[EpaintVertex]>(
             vertex_buffer,
-            0..(total_vertices.min(MAX_VERTICES) * size_of::<EpaintVertex>()) as u64,
+            0..(total_vertices.min(self.config.max_vertices) * size_of::<EpaintVertex>()) as u64,
         )?;
 
         vertices
@@ -976,7 +986,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let index_buffer = self.index_buffer_ids[frame];
         let indices = task_context.write_buffer::<[Index]>(
             self.index_buffer_ids[frame],
-            0..(total_indices.min(MAX_INDICES) * size_of::<Index>()) as u64,
+            0..(total_indices.min(self.config.max_indices) * size_of::<Index>()) as u64,
         )?;
 
         indices
@@ -1009,13 +1019,13 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> RenderEguiTask<W> {
         self.pipeline = Some({
             let (vs, fs) = if use_bindless {
                 (
-                    render_egui_bindless_vs::load(device).unwrap().entry_point("main").unwrap(),
-                    render_egui_bindless_fs::load(device).unwrap().entry_point("main").unwrap(),
+                    render_egui_bindless_vs::load(device)?.entry_point("main").unwrap(),
+                    render_egui_bindless_fs::load(device)?.entry_point("main").unwrap(),
                 )
             } else {
                 (
-                    render_egui_vs::load(device).unwrap().entry_point("main").unwrap(),
-                    render_egui_fs::load(device).unwrap().entry_point("main").unwrap(),
+                    render_egui_vs::load(device)?.entry_point("main").unwrap(),
+                    render_egui_fs::load(device)?.entry_point("main").unwrap(),
                 )
             };
 
@@ -1047,7 +1057,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> RenderEguiTask<W> {
 
             GraphicsPipeline::new(device, None, &GraphicsPipelineCreateInfo {
                 stages,
-                vertex_input_state: Some(&EguiVertex::per_vertex().definition(&vs).unwrap()),
+                vertex_input_state: Some(&EguiVertex::per_vertex().definition(&vs)?),
                 input_assembly_state: Some(&InputAssemblyState::default()),
                 viewport_state: Some(&ViewportState::default()),
                 rasterization_state: Some(&RasterizationState::default()),
@@ -1096,7 +1106,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
             panic!("Pipeline must be created before task is executed!");
         };
 
-        if let Some(debug_utils_label) = &egui_system.debug_utils {
+        if let Some(debug_utils_label) = &egui_system.config.debug_utils {
             builder.as_raw().begin_debug_utils_label(debug_utils_label)?;
         }
 
@@ -1159,7 +1169,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
                         };
                         current_texture = Some(mesh.texture_id);
 
-                        if egui_system.use_bindless {
+                        if egui_system.config.use_bindless {
                             if let EguiTexture::Bindless { sampled_image_id, sampler_id } =
                                 texture_id.1
                             {
@@ -1237,7 +1247,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
             }
         }
 
-        if egui_system.debug_utils.is_some() {
+        if egui_system.config.debug_utils.is_some() {
             builder.as_raw().end_debug_utils_label()?;
         }
 
