@@ -28,6 +28,30 @@ use vulkano_taskgraph::{
     Id,
 };
 
+/// Egui uses a premultiplied color space which allows encoding of additive
+/// colors (see documentation of [`egui::Color32`] for more details).
+/// - [`AlphaMode::Straight`] is what you want for most semi-transparent images. This will
+/// premultiply the image data you provide which can be an expensive operation for very large images.
+/// To improve performance you can do the conversion manually (e.g. multithreading) and set this to [`AlphaMode::Premultiplied`] (hence the name).
+/// - [`AlphaMode::Premultiplied`] encodes additive transparency, where as pixels approach an alpha of zero they become additive.
+///
+#[derive(Debug, Clone, Copy, Default)]
+pub enum AlphaMode {
+    #[default]
+    Straight,
+    Premultiplied,
+}
+
+/// Multiplies a byte array of (presumably) pixels with the alpha channel.
+pub fn premultiply_rgba(pixels: &mut [u8]) {
+    for px in pixels.chunks_exact_mut(4) {
+        let a = px[3] as u32;
+        px[0] = ((px[0] as u32 * a + 127) / 255) as u8;
+        px[1] = ((px[1] as u32 * a + 127) / 255) as u8;
+        px[2] = ((px[2] as u32 * a + 127) / 255) as u8;
+    }
+}
+
 #[derive(Debug)]
 pub enum ImageCreationError {
     Vulkan(Validated<VulkanError>),
@@ -48,8 +72,18 @@ pub unsafe fn immutable_texture_from_bytes<W: 'static + ?Sized>(
     staging_allocator: Option<&Arc<dyn MemoryAllocator>>,
     byte_data: &[u8],
     dimensions: [u32; 2],
+    alpha_mode: AlphaMode,
     format: vulkano::format::Format,
 ) -> Result<(Id<Image>, Arc<ImageView>), ImageCreationError> {
+    let premultiplied = if let AlphaMode::Straight = alpha_mode {
+        let mut v = byte_data.to_vec();
+        premultiply_rgba(&mut v);
+        Some(v)
+    } else {
+        None
+    };
+    let byte_data: &[u8] = premultiplied.as_deref().unwrap_or(byte_data);
+
     let texture_data_buffer = {
         let buffer_create_info =
             BufferCreateInfo { usage: BufferUsage::TRANSFER_SRC, ..Default::default() };
@@ -154,6 +188,7 @@ pub unsafe fn immutable_texture_from_file<W: 'static + ?Sized>(
     flight_id: Id<Flight>,
     staging_allocator: Option<&Arc<dyn MemoryAllocator>>,
     file_bytes: &[u8],
+    alpha_mode: AlphaMode,
     format: vulkano::format::Format,
 ) -> Result<(Id<Image>, Arc<ImageView>), ImageCreationError> {
     use image::GenericImageView;
@@ -183,6 +218,7 @@ pub unsafe fn immutable_texture_from_file<W: 'static + ?Sized>(
         staging_allocator,
         &rgba,
         [dimensions.0, dimensions.1],
+        alpha_mode,
         format,
     )
 }

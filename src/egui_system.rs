@@ -77,7 +77,7 @@ const MAX_INDICES: usize = MAX_QUADS * INDICES_PER_QUAD;
 use egui::epaint::Vertex as EpaintVertex;
 
 #[cfg(feature = "image")]
-use crate::image_utils::immutable_texture_from_file;
+use crate::image_utils::{immutable_texture_from_file, AlphaMode};
 use crate::{image_utils::ImageCreationError, immutable_texture_from_bytes};
 
 type Index = u32;
@@ -495,7 +495,8 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
     /// Registers a user image to be used by egui
     /// - `image_file_bytes`: e.g. include_bytes!("./assets/tree.png")
-    /// - `format`: e.g. vulkano::format::Format::R8G8B8A8Unorm
+    /// - `alpha_mode`: e.g. [`AlphaMode::Straight`] for non-additive transparency.
+    /// - `format`: e.g. [`vulkano::format::Format::R8G8B8A8_UNORM``]
     ///
     /// This differs from [`EguiSystem::register_user_image_from_bytes`] in that it
     /// automatically converts into the rgba8 format with [`image::load_from_memory`]
@@ -505,6 +506,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     pub fn register_user_image(
         &mut self,
         image_file_bytes: &[u8],
+        alpha_mode: AlphaMode,
         format: vulkano::format::Format,
         sampler_create_info: SamplerCreateInfo,
     ) -> Result<egui::TextureId, EguiSystemError> {
@@ -517,6 +519,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                 self.flight_id,
                 self.staging_allocator.as_ref(),
                 image_file_bytes,
+                alpha_mode,
                 format,
             )
             .map_err(|err| EguiSystemError::ImageCreationError(err))?
@@ -539,6 +542,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         &mut self,
         image_byte_data: &[u8],
         dimensions: [u32; 2],
+        alpha_mode: AlphaMode,
         format: vulkano::format::Format,
         sampler_create_info: SamplerCreateInfo,
     ) -> Result<egui::TextureId, EguiSystemError> {
@@ -552,6 +556,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                 self.staging_allocator.as_ref(),
                 image_byte_data,
                 dimensions,
+                alpha_mode,
                 format,
             )
             .map_err(|err| EguiSystemError::ImageCreationError(err))?
