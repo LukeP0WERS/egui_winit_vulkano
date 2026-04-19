@@ -11,6 +11,6 @@ mod egui_system;
 mod image_utils;
 
 pub use egui_system::{EguiSystem, EguiSystemConfig, EguiTexture, RenderEguiWorld};
-pub use image_utils::immutable_texture_from_bytes;
+pub use image_utils::{immutable_texture_from_bytes, AlphaMode};
 #[cfg(feature = "image")]
 pub use image_utils::immutable_texture_from_file;
