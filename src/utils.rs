@@ -12,9 +12,14 @@ use std::sync::Arc;
 #[cfg(feature = "image")]
 use image::RgbaImage;
 use vulkano::{
-    Validated, VulkanError, buffer::{AllocateBufferError, Buffer, BufferCreateInfo, BufferUsage}, device::Queue, image::{
-        AllocateImageError, Image, ImageCreateInfo, ImageType, ImageUsage, view::{ImageView, ImageViewCreateInfo}
-    }, memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter}
+    buffer::{AllocateBufferError, Buffer, BufferCreateInfo, BufferUsage},
+    device::Queue,
+    image::{
+        view::{ImageView, ImageViewCreateInfo},
+        AllocateImageError, Image, ImageCreateInfo, ImageType, ImageUsage,
+    },
+    memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter},
+    Validated, VulkanError,
 };
 use vulkano_taskgraph::{
     command_buffer::CopyBufferToImageInfo,
@@ -31,7 +36,12 @@ pub enum ImageCreationError {
     ExecuteError(ExecuteError),
 }
 
-pub fn immutable_texture_from_bytes<W: 'static + ?Sized>(
+/// Creates an image resource and uploads data to it from raw byte data.
+///
+/// # Safety
+///
+/// - The user must ensure the queue supports transfer operations.
+pub unsafe fn immutable_texture_from_bytes<W: 'static + ?Sized>(
     queue: &Arc<Queue>,
     resources: &Arc<Resources>,
     flight_id: Id<Flight>,
@@ -41,18 +51,14 @@ pub fn immutable_texture_from_bytes<W: 'static + ?Sized>(
     format: vulkano::format::Format,
 ) -> Result<(Id<Image>, Arc<ImageView>), ImageCreationError> {
     let texture_data_buffer = {
-        let buffer_create_info = BufferCreateInfo {
-            usage: BufferUsage::TRANSFER_SRC,
-            ..Default::default()
-        };
+        let buffer_create_info =
+            BufferCreateInfo { usage: BufferUsage::TRANSFER_SRC, ..Default::default() };
         let allocation_info = AllocationCreateInfo {
             memory_type_filter: MemoryTypeFilter::PREFER_HOST
                 | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
             ..Default::default()
         };
-        let device_layout = DeviceLayout::new_unsized::<[u8]>(
-            byte_data.len() as u64
-        ).unwrap();
+        let device_layout = DeviceLayout::new_unsized::<[u8]>(byte_data.len() as u64).unwrap();
 
         if let Some(staging_allocator) = staging_allocator {
             let texture_buffer = Buffer::new(
@@ -60,14 +66,13 @@ pub fn immutable_texture_from_bytes<W: 'static + ?Sized>(
                 &buffer_create_info,
                 &allocation_info,
                 device_layout,
-            ).map_err(ImageCreationError::AllocateBuffer)?;
+            )
+            .map_err(ImageCreationError::AllocateBuffer)?;
             resources.add_buffer(texture_buffer)
         } else {
-            resources.create_buffer(
-                &buffer_create_info,
-                &allocation_info,
-                device_layout,
-            ).map_err(ImageCreationError::AllocateBuffer)?
+            resources
+                .create_buffer(&buffer_create_info, &allocation_info, device_layout)
+                .map_err(ImageCreationError::AllocateBuffer)?
         }
     };
 
@@ -91,36 +96,40 @@ pub fn immutable_texture_from_bytes<W: 'static + ?Sized>(
     let flight = resources.flight(flight_id).unwrap();
     flight.wait(None).unwrap();
 
-    // NOT SAFE
-    unsafe { vulkano_taskgraph::execute(
-        &queue.clone(),
-        &resources.clone(),
-        flight_id,
-        |builder, task_context| {
-            let write_buffer = task_context.write_buffer::<[u8]>(texture_data_buffer, ..)?;
-            write_buffer.copy_from_slice(byte_data);
+    // SAFETY:
+    // * The resources are not being accessed by any other task graph execution.
+    // * The user must ensure the queue supports image transfer operations.
+    unsafe {
+        vulkano_taskgraph::execute(
+            &queue.clone(),
+            &resources.clone(),
+            flight_id,
+            |builder, task_context| {
+                let write_buffer = task_context.write_buffer::<[u8]>(texture_data_buffer, ..)?;
+                write_buffer.copy_from_slice(byte_data);
 
-            builder
-                .copy_buffer_to_image(&CopyBufferToImageInfo {
-                    src_buffer: texture_data_buffer,
-                    dst_image: texture_id,
-                    ..Default::default()
-                })
-                .unwrap();
+                builder
+                    .copy_buffer_to_image(&CopyBufferToImageInfo {
+                        src_buffer: texture_data_buffer,
+                        dst_image: texture_id,
+                        ..Default::default()
+                    })
+                    .unwrap();
 
-            Ok(())
-        },
-        [(texture_data_buffer, HostAccessType::Write)],
-        [(texture_data_buffer, AccessTypes::COPY_TRANSFER_READ)],
-        [(texture_id, AccessTypes::COPY_TRANSFER_WRITE, ImageLayoutType::Optimal)],
-    ) } 
-        .map_err(ImageCreationError::ExecuteError)?;
-    
+                Ok(())
+            },
+            [(texture_data_buffer, HostAccessType::Write)],
+            [(texture_data_buffer, AccessTypes::COPY_TRANSFER_READ)],
+            [(texture_id, AccessTypes::COPY_TRANSFER_WRITE, ImageLayoutType::Optimal)],
+        )
+    }
+    .map_err(ImageCreationError::ExecuteError)?;
+
     // Queue destruction of staging buffer
     let mut batch = resources.create_deferred_batch();
     batch.destroy_buffer(texture_data_buffer);
 
-    // SAFETY: The buffer isn't used by any other flights. 
+    // SAFETY: The buffer isn't used by any other flights.
     unsafe {
         batch.enqueue_with_flights([flight_id]);
     }
@@ -134,7 +143,12 @@ pub fn immutable_texture_from_bytes<W: 'static + ?Sized>(
 }
 
 #[cfg(feature = "image")]
-pub fn immutable_texture_from_file<W: 'static + ?Sized>(
+/// Creates an image resource and uploads data to it from the file bytes.
+///
+/// # Safety
+///
+/// - The user must ensure the queue supports transfer operations.
+pub unsafe fn immutable_texture_from_file<W: 'static + ?Sized>(
     queue: &Arc<Queue>,
     resources: &Arc<Resources>,
     flight_id: Id<Flight>,

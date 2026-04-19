@@ -11,25 +11,50 @@ use std::{marker::PhantomData, ops::Range, sync::Arc};
 
 use egui::{ahash::AHashMap, epaint::Primitive, ClippedPrimitive, Rect, TexturesDelta};
 use vulkano::{
-    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, IndexType}, descriptor_set::{
-        DescriptorImageInfo, DescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator, layout::{
+    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, IndexType},
+    descriptor_set::{
+        allocator::StandardDescriptorSetAllocator,
+        layout::{
             DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
             DescriptorType,
-        }
-    }, device::{Device, Queue}, format::{Format, NumericFormat}, image::{
-        Image, ImageAspects, ImageCreateInfo, ImageLayout, ImageSubresourceLayers, ImageType, ImageUsage, SampleCount, sampler::{
+        },
+        DescriptorImageInfo, DescriptorSet, WriteDescriptorSet,
+    },
+    device::{Device, Queue, QueueFlags},
+    format::{Format, NumericFormat},
+    image::{
+        sampler::{
             ComponentMapping, ComponentSwizzle, Filter, Sampler, SamplerAddressMode,
             SamplerCreateInfo, SamplerMipmapMode,
-        }, view::{ImageView, ImageViewCreateInfo}
-    }, instance::debug::DebugUtilsLabel, memory::{
-        DeviceAlignment, allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter}
-    }, pipeline::{
-        DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo, graphics::{
-            GraphicsPipelineCreateInfo, color_blend::{
+        },
+        view::{ImageView, ImageViewCreateInfo},
+        Image, ImageAspects, ImageCreateInfo, ImageLayout, ImageSubresourceLayers, ImageType,
+        ImageUsage, SampleCount,
+    },
+    instance::debug::DebugUtilsLabel,
+    memory::{
+        allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter},
+        DeviceAlignment,
+    },
+    pipeline::{
+        graphics::{
+            color_blend::{
                 AttachmentBlend, BlendFactor, ColorBlendAttachmentState, ColorBlendState,
-            }, input_assembly::InputAssemblyState, multisample::MultisampleState, rasterization::RasterizationState, subpass::PipelineSubpassType, vertex_input::{Vertex, VertexDefinition}, viewport::{Scissor, Viewport, ViewportState}
-        }
-    }, render_pass::{Framebuffer, Subpass}, shader::ShaderStages, swapchain::{Surface, Swapchain}
+            },
+            input_assembly::InputAssemblyState,
+            multisample::MultisampleState,
+            rasterization::RasterizationState,
+            subpass::PipelineSubpassType,
+            vertex_input::{Vertex, VertexDefinition},
+            viewport::{Scissor, Viewport, ViewportState},
+            GraphicsPipelineCreateInfo,
+        },
+        DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout,
+        PipelineShaderStageCreateInfo,
+    },
+    render_pass::{Framebuffer, Subpass},
+    shader::ShaderStages,
+    swapchain::{Surface, Swapchain},
 };
 use vulkano_taskgraph::{
     command_buffer::{BufferImageCopy, CopyBufferToImageInfo, RecordingCommandBuffer},
@@ -143,11 +168,13 @@ pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
 }
 
 impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
-    
     /// Creates a new EguiSystem for rendering to the task graph.
-    /// 
-    /// `staging_allocator` can be optionally provided for temporary allocation of staging buffers.
+    /// - `event_loop`: The physical device that the [`Queue`] was created with must support
+    /// presentation to the event loop provided.
+    /// - `queue`: You must verify that the [`Queue`] supports image transfer operations.
+    /// - `staging_allocator`: can be optionally provided for temporary allocation of staging buffers.
     /// A `BumpAllocator` works well here if its properly managed with the rest of your program.
+    ///
     pub fn new(
         event_loop: &ActiveEventLoop,
         surface: &Arc<Surface>,
@@ -164,8 +191,22 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let output_in_linear_colorspace =
             swapchain_format.numeric_format_color().unwrap() == NumericFormat::SRGB;
 
-        let max_texture_side =
-            queue.device().physical_device().properties().max_image_dimension2_d as usize;
+        let physical_device = queue.device().physical_device();
+        let max_texture_side = physical_device.properties().max_image_dimension2_d as usize;
+
+        // TODO: Add custom error type to propogate these errors.
+        assert!(
+            physical_device,
+            "The physical device must support presentation to the event loop provided!",
+        );
+
+        let queue_index = queue.queue_family_index() as usize;
+        let queue_properties = physical_device.queue_family_properties()[queue_index];
+
+        assert!(
+            queue_properties.queue_flags.intersects(QueueFlags::TRANSFER),
+            "The queue provided must support transfer operations!",
+        );
 
         let egui_ctx: egui::Context = Default::default();
 
@@ -203,26 +244,18 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let flight = resources.flight(flight_id).unwrap();
         let frames_in_flight = flight.frame_count();
 
-        let create_buffer_ids = |
-            create_info,
-            allocation_info,
-            layout,
-        | {
+        let create_buffer_ids = |create_info, allocation_info, layout| {
             let mut buffer_ids = vec![];
             for _ in 0..frames_in_flight {
-                let buffer_id = resources.create_buffer(
-                    &create_info, &allocation_info, layout
-                ).unwrap();
+                let buffer_id =
+                    resources.create_buffer(&create_info, &allocation_info, layout).unwrap();
                 buffer_ids.push(buffer_id);
             }
             buffer_ids
         };
 
         let vertex_buffer_ids = create_buffer_ids(
-            BufferCreateInfo {
-                usage: BufferUsage::VERTEX_BUFFER,
-                ..Default::default()
-            },
+            BufferCreateInfo { usage: BufferUsage::VERTEX_BUFFER, ..Default::default() },
             AllocationCreateInfo {
                 memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
@@ -231,14 +264,12 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             DeviceLayout::from_size_alignment(
                 (MAX_VERTICES * size_of::<EguiVertex>()) as u64,
                 VERTEX_ALIGN.into(),
-            ).unwrap(),
+            )
+            .unwrap(),
         );
 
         let index_buffer_ids = create_buffer_ids(
-            BufferCreateInfo {
-                usage: BufferUsage::INDEX_BUFFER,
-                ..Default::default()
-            },
+            BufferCreateInfo { usage: BufferUsage::INDEX_BUFFER, ..Default::default() },
             AllocationCreateInfo {
                 memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
@@ -247,7 +278,8 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             DeviceLayout::from_size_alignment(
                 (MAX_INDICES * size_of::<Index>()) as u64,
                 INDEX_ALIGN.into(),
-            ).unwrap(),
+            )
+            .unwrap(),
         );
 
         let (descriptor_set_allocator, descriptor_set_layout, texture_descriptor_sets) =
@@ -280,9 +312,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             queue: queue.clone(),
             resources: resources.clone(),
             flight_id,
-            staging_allocator: staging_allocator.map(|x| {
-                x.clone().as_dyn()
-            }),
+            staging_allocator: staging_allocator.map(|x| x.clone().as_dyn()),
 
             debug_utils,
             use_bindless,
@@ -321,11 +351,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         virtual_swapchain_id: Id<Swapchain>,
         virtual_framebuffer_id: Id<Framebuffer>,
     ) -> NodeId {
-
-        for (vertex_id, index_id) in self.vertex_buffer_ids
-            .iter()
-            .zip(&self.index_buffer_ids)
-        {
+        for (vertex_id, index_id) in self.vertex_buffer_ids.iter().zip(&self.index_buffer_ids) {
             task_graph.add_host_buffer_access(*vertex_id, HostAccessType::Write);
             task_graph.add_host_buffer_access(*index_id, HostAccessType::Write);
         }
@@ -337,23 +363,18 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             RenderEguiTask::new(),
         );
 
-        for (vertex_id, index_id) in self.vertex_buffer_ids
-            .iter()
-            .zip(&self.index_buffer_ids)
-        {
+        for (vertex_id, index_id) in self.vertex_buffer_ids.iter().zip(&self.index_buffer_ids) {
             task_node_builder
                 .buffer_access(*vertex_id, AccessTypes::VERTEX_ATTRIBUTE_READ)
                 .buffer_access(*index_id, AccessTypes::INDEX_READ);
         }
 
-        task_node_builder
-            .framebuffer(virtual_framebuffer_id)
-            .color_attachment(
-                virtual_swapchain_id.current_image_id(),
-                AccessTypes::COLOR_ATTACHMENT_WRITE | AccessTypes::COLOR_ATTACHMENT_READ,
-                ImageLayoutType::Optimal,
-                &AttachmentInfo { ..Default::default() },
-            );
+        task_node_builder.framebuffer(virtual_framebuffer_id).color_attachment(
+            virtual_swapchain_id.current_image_id(),
+            AccessTypes::COLOR_ATTACHMENT_WRITE | AccessTypes::COLOR_ATTACHMENT_READ,
+            ImageLayoutType::Optimal,
+            &AttachmentInfo { ..Default::default() },
+        );
         let node_id = task_node_builder.build();
         self.egui_node_id = Some(node_id);
 
@@ -381,15 +402,10 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
     /// Extracts the draw data for the frame, updates textures, and sends mesh primitive data required for rendering
     /// to [RenderEguiTask].
-    pub fn update_task_draw_data(
-        &mut self,
-        task_graph: &mut ExecutableTaskGraph<W>,
-    ) {
+    pub fn update_task_draw_data(&mut self, task_graph: &mut ExecutableTaskGraph<W>) {
         let (clipped_meshes, textures_delta) = self.extract_draw_data_at_frame_end();
 
-        self.update_textures(
-            &textures_delta.set,
-        );
+        self.update_textures(&textures_delta.set);
 
         for &id in &textures_delta.free {
             self.unregister_image(id);
@@ -439,6 +455,11 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     /// Registers a user image to be used by egui
     /// - `image_file_bytes`: e.g. include_bytes!("./assets/tree.png")
     /// - `format`: e.g. vulkano::format::Format::R8G8B8A8Unorm
+    ///
+    /// This differs from [`EguiSystem::register_user_image_from_bytes`] in that it
+    /// automatically converts into the rgba8 format with [`image::load_from_memory`]
+    /// and [`image::DynamicImage::as_rgba8`].
+    ///
     #[cfg(feature = "image")]
     pub fn register_user_image(
         &mut self,
@@ -446,14 +467,18 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         format: vulkano::format::Format,
         sampler_create_info: SamplerCreateInfo,
     ) -> Result<egui::TextureId, ImageCreationError> {
-        let (image_id, image_view) = immutable_texture_from_file::<W>(
-            &self.queue,
-            &self.resources,
-            self.flight_id,
-            self.staging_allocator.as_ref(),
-            image_file_bytes,
-            format,
-        )?;
+        // SAFETY: [`EguiSystem`] cannot be successfully created with a queue that
+        // doesn't support transfer operations.
+        let (image_id, image_view) = unsafe {
+            immutable_texture_from_file::<W>(
+                &self.queue,
+                &self.resources,
+                self.flight_id,
+                self.staging_allocator.as_ref(),
+                image_file_bytes,
+                format,
+            )?
+        };
 
         let sampler = Sampler::new(self.queue.device(), &sampler_create_info).unwrap();
 
@@ -462,6 +487,10 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         Ok(self.register_image(image_id, egui_texture))
     }
 
+    /// Registers a user image to be used by egui from raw file bytes.
+    /// - `image_file_bytes`: e.g. include_bytes!("./assets/tree.png")
+    /// - `format`: e.g. vulkano::format::Format::R8G8B8A8Unorm
+    ///
     pub fn register_user_image_from_bytes(
         &mut self,
         image_byte_data: &[u8],
@@ -469,15 +498,19 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         format: vulkano::format::Format,
         sampler_create_info: SamplerCreateInfo,
     ) -> Result<egui::TextureId, ImageCreationError> {
-        let (image_id, image_view) = immutable_texture_from_bytes::<W>(
-            &self.queue,
-            &self.resources,
-            self.flight_id,
-            self.staging_allocator.as_ref(),
-            image_byte_data,
-            dimensions,
-            format,
-        )?;
+        // SAFETY: [`EguiSystem`] cannot be successfully created with a queue that
+        // doesn't support transfer operations.
+        let (image_id, image_view) = unsafe {
+            immutable_texture_from_bytes::<W>(
+                &self.queue,
+                &self.resources,
+                self.flight_id,
+                self.staging_allocator.as_ref(),
+                image_byte_data,
+                dimensions,
+                format,
+            )?
+        };
 
         let sampler = Sampler::new(self.queue.device(), &sampler_create_info).unwrap();
 
@@ -574,7 +607,8 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                     "Mismatch between texture size and texel count"
                 );
 
-                let bytes: Vec<u8> = image.pixels.iter().flat_map(|color| color.to_array()).collect();
+                let bytes: Vec<u8> =
+                    image.pixels.iter().flat_map(|color| color.to_array()).collect();
 
                 (Format::R8G8B8A8_SRGB, bytes)
             }
@@ -602,10 +636,12 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             };
             let allocation_info = &AllocationCreateInfo::default();
 
-            let new_image_id = self.resources.create_image(create_info, allocation_info)
+            let new_image_id = self
+                .resources
+                .create_image(create_info, allocation_info)
                 .map_err(ImageCreationError::AllocateImage)?;
 
-            //Swizzle packed font images up to a full premul white.
+            // Swizzle packed font images up to a full premul white.
             let component_mapping = match format {
                 Format::R8G8_UNORM => ComponentMapping {
                     r: ComponentSwizzle::Red,
@@ -643,66 +679,72 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let flight = self.resources.flight(self.flight_id).unwrap();
         flight.wait(None).unwrap();
 
-        // NOT SAFE
-        unsafe { vulkano_taskgraph::execute(
-            &self.queue,
-            &self.resources,
-            self.flight_id,
-            |builder, task_context| {
-                let write = task_context.write_buffer::<[u8]>(buffer_id, range.clone())?;
-                write.copy_from_slice(&bytes);
+        // SAFETY:
+        // * The resources are not being accessed by any other task graph execution.
+        // * [`EguiSystem`] cannot be successfully created with a queue that doesn't support
+        // transfer operations.
+        unsafe {
+            vulkano_taskgraph::execute(
+                &self.queue,
+                &self.resources,
+                self.flight_id,
+                |builder, task_context| {
+                    let write = task_context.write_buffer::<[u8]>(buffer_id, range.clone())?;
+                    write.copy_from_slice(&bytes);
 
-                if is_new_image {
-                    // Defer upload of data
-                    builder
-                        .copy_buffer_to_image(&CopyBufferToImageInfo {
-                            src_buffer: buffer_id,
-                            dst_image: new_image_id,
-                            regions: &[BufferImageCopy {
-                                buffer_offset: range.start,
-                                image_extent: extent,
-                                image_subresource: ImageSubresourceLayers {
-                                    aspects: ImageAspects::COLOR,
-                                    mip_level: 0,
-                                    base_array_layer: 0,
-                                    layer_count: None,
-                                },
+                    if is_new_image {
+                        // Defer upload of data
+                        builder
+                            .copy_buffer_to_image(&CopyBufferToImageInfo {
+                                src_buffer: buffer_id,
+                                dst_image: new_image_id,
+                                regions: &[BufferImageCopy {
+                                    buffer_offset: range.start,
+                                    image_extent: extent,
+                                    image_subresource: ImageSubresourceLayers {
+                                        aspects: ImageAspects::COLOR,
+                                        mip_level: 0,
+                                        base_array_layer: 0,
+                                        layer_count: None,
+                                    },
+                                    ..Default::default()
+                                }],
                                 ..Default::default()
-                            }],
-                            ..Default::default()
-                        })
-                        .unwrap();
-                } else {
-                    let pos = delta.pos.unwrap();
-                    // Defer upload of data
-                    builder
-                        .copy_buffer_to_image(&CopyBufferToImageInfo {
-                            src_buffer: buffer_id,
-                            dst_image: new_image_id,
-                            regions: &[BufferImageCopy {
-                                buffer_offset: range.start,
-                                image_offset: [pos[0] as u32, pos[1] as u32, 0],
-                                image_extent: extent,
-                                // Always use the whole image (no arrays or mips are performed)
-                                image_subresource: ImageSubresourceLayers {
-                                    aspects: ImageAspects::COLOR,
-                                    mip_level: 0,
-                                    base_array_layer: 0,
-                                    layer_count: None,
-                                },
+                            })
+                            .unwrap();
+                    } else {
+                        let pos = delta.pos.unwrap();
+                        // Defer upload of data
+                        builder
+                            .copy_buffer_to_image(&CopyBufferToImageInfo {
+                                src_buffer: buffer_id,
+                                dst_image: new_image_id,
+                                regions: &[BufferImageCopy {
+                                    buffer_offset: range.start,
+                                    image_offset: [pos[0] as u32, pos[1] as u32, 0],
+                                    image_extent: extent,
+                                    // Always use the whole image (no arrays or mips are performed)
+                                    image_subresource: ImageSubresourceLayers {
+                                        aspects: ImageAspects::COLOR,
+                                        mip_level: 0,
+                                        base_array_layer: 0,
+                                        layer_count: None,
+                                    },
+                                    ..Default::default()
+                                }],
                                 ..Default::default()
-                            }],
-                            ..Default::default()
-                        })
-                        .unwrap();
-                }
+                            })
+                            .unwrap();
+                    }
 
-                Ok(())
-            },
-            [(buffer_id, HostAccessType::Write)],
-            [(buffer_id, AccessTypes::COPY_TRANSFER_READ)],
-            [(new_image_id, AccessTypes::COPY_TRANSFER_WRITE, ImageLayoutType::Optimal)],
-        ) }.unwrap();
+                    Ok(())
+                },
+                [(buffer_id, HostAccessType::Write)],
+                [(buffer_id, AccessTypes::COPY_TRANSFER_READ)],
+                [(new_image_id, AccessTypes::COPY_TRANSFER_WRITE, ImageLayoutType::Optimal)],
+            )
+        }
+        .unwrap();
 
         if is_new_image {
             if !self.use_bindless {
@@ -718,11 +760,10 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     }
 
     /// Write the entire texture delta for this frame.
-    pub fn update_textures(
-        &mut self,
-        sets: &[(egui::TextureId, egui::epaint::ImageDelta)],
-    ) {
-        if sets.is_empty() { return; }
+    fn update_textures(&mut self, sets: &[(egui::TextureId, egui::epaint::ImageDelta)]) {
+        if sets.is_empty() {
+            return;
+        }
 
         // Allocate enough memory to upload every delta at once.
         let total_size_bytes =
@@ -735,10 +776,8 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         };
 
         let buffer_id = {
-            let create_info = &BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_SRC,
-                ..Default::default()
-            };
+            let create_info =
+                &BufferCreateInfo { usage: BufferUsage::TRANSFER_SRC, ..Default::default() };
             let allocation_info = &AllocationCreateInfo {
                 memory_type_filter: MemoryTypeFilter::PREFER_HOST
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
@@ -747,19 +786,11 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             let layout = DeviceLayout::new(total_size_bytes, DeviceAlignment::MIN).unwrap();
 
             if let Some(staging_allocator) = self.staging_allocator.as_ref() {
-                let buffer = Buffer::new(
-                    staging_allocator,
-                    create_info,
-                    allocation_info,
-                    layout,
-                ).unwrap();
+                let buffer =
+                    Buffer::new(staging_allocator, create_info, allocation_info, layout).unwrap();
                 self.resources.add_buffer(buffer)
             } else {
-                self.resources.create_buffer(
-                    create_info,
-                    allocation_info,
-                    layout,
-                ).unwrap()
+                self.resources.create_buffer(create_info, allocation_info, layout).unwrap()
             }
         };
 
@@ -782,7 +813,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let mut batch = self.resources.create_deferred_batch();
         batch.destroy_buffer(buffer_id);
 
-        // SAFETY: The buffer isn't used by any other flights. 
+        // SAFETY: The buffer isn't used by any other flights.
         unsafe {
             batch.enqueue_with_flights([self.flight_id]);
         }
@@ -877,10 +908,12 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let frame = task_context.current_frame_index() as usize;
 
         let vertex_buffer = self.vertex_buffer_ids[frame];
-        let vertices = task_context.write_buffer::<[EpaintVertex]>(
-            vertex_buffer,
-            0..(total_vertices.min(MAX_VERTICES) * size_of::<EpaintVertex>()) as u64
-        ).unwrap();
+        let vertices = task_context
+            .write_buffer::<[EpaintVertex]>(
+                vertex_buffer,
+                0..(total_vertices.min(MAX_VERTICES) * size_of::<EpaintVertex>()) as u64,
+            )
+            .unwrap();
 
         vertices
             .iter_mut()
@@ -888,10 +921,12 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             .for_each(|(into, from)| *into = from);
 
         let index_buffer = self.index_buffer_ids[frame];
-        let indices = task_context.write_buffer::<[Index]>(
-            self.index_buffer_ids[frame],
-            0..(total_indices.min(MAX_INDICES) * size_of::<Index>()) as u64,
-        ).unwrap();
+        let indices = task_context
+            .write_buffer::<[Index]>(
+                self.index_buffer_ids[frame],
+                0..(total_indices.min(MAX_INDICES) * size_of::<Index>()) as u64,
+            )
+            .unwrap();
 
         indices
             .iter_mut()
@@ -1015,10 +1050,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
         let screen_size = [extent[0] as f32 / scale_factor, extent[1] as f32 / scale_factor];
         let output_in_linear_colorspace = egui_system.output_in_linear_colorspace.into();
 
-        let mesh_buffers = egui_system.upload_meshes(
-            task_context,
-            clipped_meshes,
-        );
+        let mesh_buffers = egui_system.upload_meshes(task_context, clipped_meshes);
 
         // Current position of renderbuffers, advances as meshes are consumed.
         let mut vertex_cursor = 0;
@@ -1060,7 +1092,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
                             ..Viewport::new()
                         }])?;
                         builder.bind_pipeline_graphics(pipeline)?;
-                        
+
                         builder
                             .bind_index_buffer(index_buffer, 0, None, IndexType::U32)?
                             .bind_vertex_buffers(0, &[vertex_buffer], &[0], &[], &[])?;
