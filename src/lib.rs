@@ -8,9 +8,9 @@
 // according to those terms.
 
 mod egui_system;
-mod utils;
+mod image_utils;
 
 pub use egui_system::{EguiSystem, EguiSystemConfig, EguiTexture, RenderEguiWorld};
-pub use utils::immutable_texture_from_bytes;
+pub use image_utils::immutable_texture_from_bytes;
 #[cfg(feature = "image")]
-pub use utils::immutable_texture_from_file;
+pub use image_utils::immutable_texture_from_file;
