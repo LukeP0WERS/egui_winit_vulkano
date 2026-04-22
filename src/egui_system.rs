@@ -110,7 +110,7 @@ impl EguiSystemConfig {
     const INDICES_PER_QUAD: usize = 6;
 
     /// Derives EguiSystemConfig from a maximum number of quads.
-    /// - `max_quads`: e.g. 0x10000
+    /// - `max_quads`: e.g. 65536
     pub fn from_max_quads(max_quads: usize) -> Self {
         Self {
             use_bindless: false,
@@ -388,7 +388,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         })
     }
 
-    /// Creates RenderEguiTask and adds it to task graph for rendering
+    /// Creates [`RenderEguiTask`] and adds it to task graph for rendering
     pub fn render_egui(
         &mut self,
         task_graph: &mut TaskGraph<W>,
@@ -447,7 +447,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     }
 
     /// Extracts the draw data for the frame, updates textures, and sends mesh primitive data required for rendering
-    /// to [RenderEguiTask].
+    /// to [`RenderEguiTask`].
     pub fn update_task_draw_data(&mut self, task_graph: &mut ExecutableTaskGraph<W>) {
         let (clipped_meshes, textures_delta) = self.extract_draw_data_at_frame_end();
 
@@ -517,7 +517,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         format: vulkano::format::Format,
         sampler_create_info: SamplerCreateInfo,
     ) -> Result<egui::TextureId, EguiSystemError> {
-        // SAFETY: [`EguiSystem`] cannot be successfully created with a queue that
+        // SAFETY: `EguiSystem` cannot be successfully created with a queue that
         // doesn't support transfer operations.
         let (image_id, image_view) = unsafe {
             immutable_texture_from_file::<W>(
@@ -553,7 +553,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         format: vulkano::format::Format,
         sampler_create_info: SamplerCreateInfo,
     ) -> Result<egui::TextureId, EguiSystemError> {
-        // SAFETY: [`EguiSystem`] cannot be successfully created with a queue that
+        // SAFETY: `EguiSystem` cannot be successfully created with a queue that
         // doesn't support transfer operations.
         let (image_id, image_view) = unsafe {
             immutable_texture_from_bytes::<W>(
@@ -742,7 +742,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
         // SAFETY:
         // * The resources are not being accessed by any other task graph execution.
-        // * [`EguiSystem`] cannot be successfully created with a queue that doesn't support
+        // * `EguiSystem` cannot be successfully created with a queue that doesn't support
         // transfer operations.
         unsafe {
             vulkano_taskgraph::execute(
