@@ -913,6 +913,21 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         self.egui_ctx.run_ui(raw_input, run_ui)
     }
 
+    /// Begins Egui frame by extracting the accumulated input.
+    /// This must be called before `draw`, and after `update` (winit event).
+    /// 
+    /// # Examples
+    /// ```
+    /// let raw_input = egui_system.take_egui_input();
+    /// let ctx = egui_system.context();
+    /// ctx.run_ui(raw_input, |ui| {
+    ///     // modify ui here
+    /// });
+    /// ```
+    pub fn take_egui_input(&mut self) -> egui::RawInput {
+        self.egui_winit.take_egui_input(surface_window(&self.surface))
+    }
+
     fn extract_draw_data_at_frame_end(&mut self) -> (Vec<ClippedPrimitive>, TexturesDelta) {
         self.end_frame();
         let shapes = std::mem::take(&mut self.shapes);
