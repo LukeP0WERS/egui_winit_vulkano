@@ -906,11 +906,11 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         self.egui_winit.on_window_event(surface_window(&self.surface), winit_event).consumed
     }
 
-    /// Begins Egui frame & determines what will be drawn later. This must be called before draw, and after `update` (winit event).
-    pub fn immediate_ui(&mut self) -> egui::Context {
+    /// Begins Egui frame & runs the ui code for one frame.
+    /// This must be called before `draw`, and after `update` (winit event).
+    pub fn run_ui(&mut self, run_ui: impl FnMut(&mut egui::Ui)) -> egui::FullOutput {
         let raw_input = self.egui_winit.take_egui_input(surface_window(&self.surface));
-        self.egui_ctx.begin_pass(raw_input);
-        self.egui_ctx.clone()
+        self.egui_ctx.run_ui(raw_input, run_ui)
     }
 
     fn extract_draw_data_at_frame_end(&mut self) -> (Vec<ClippedPrimitive>, TexturesDelta) {
