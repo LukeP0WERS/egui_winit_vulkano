@@ -10,9 +10,7 @@
 use std::{fmt::Debug, marker::PhantomData, ops::Range, sync::Arc};
 
 use egui::{
-    ahash::AHashMap,
-    epaint::{Primitive, Vertex as EpaintVertex},
-    ClippedPrimitive, Rect, TexturesDelta,
+    ClippedPrimitive, FullOutput, Rect, TexturesDelta, ahash::AHashMap, epaint::{Primitive, Vertex as EpaintVertex}
 };
 use vulkano::{
     buffer::{
@@ -186,9 +184,6 @@ pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
     pub egui_ctx: egui::Context,
     pub egui_winit: egui_winit::State,
     surface: Arc<Surface>,
-
-    shapes: Vec<egui::epaint::ClippedShape>,
-    textures_delta: egui::TexturesDelta,
 
     vertex_buffer_ids: Vec<Id<Buffer>>,
     index_buffer_ids: Vec<Id<Buffer>>,
@@ -366,9 +361,6 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             egui_winit,
             surface: surface.clone(),
 
-            shapes: vec![],
-            textures_delta: Default::default(),
-
             vertex_buffer_ids,
             index_buffer_ids,
 
@@ -446,10 +438,67 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         Ok(())
     }
 
+    
+
+    /// Updates context state by winit window event.
+    /// Returns `true` if egui wants exclusive use of this event
+    /// (e.g. a mouse click on an egui window, or entering text into a text field).
+    /// For instance, if you use egui for a game, you want to first call this
+    /// and only when this returns `false` pass on the events to your game.
+    ///
+    /// Note that egui uses `tab` to move focus between elements, so this will always return `true` for tabs.
+    pub fn update(&mut self, winit_event: &winit::event::WindowEvent) -> bool {
+        self.egui_winit.on_window_event(surface_window(&self.surface), winit_event).consumed
+    }
+
+    /// Begins Egui frame & runs the ui code for one frame.
+    /// This must be called before `draw`, and after `update` (winit event).
+    /// 
+    /// # Examples
+    /// ```
+    /// let full_output = ctx.run_ui(raw_input, |ui| {
+    ///     // modify ui here
+    /// });
+    /// // the output from run_ui must be provided here
+    /// egui_system.update_task_draw_data(
+    ///     &mut task_graph,
+    ///     full_output,
+    /// );
+    pub fn run_ui(&mut self, run_ui: impl FnMut(&mut egui::Ui)) -> egui::FullOutput {
+        let raw_input = self.egui_winit.take_egui_input(surface_window(&self.surface));
+        self.egui_ctx.run_ui(raw_input, run_ui)
+    }
+
+    /// Begins Egui frame by extracting the accumulated input.
+    /// This must be called before `draw`, and after `update` (winit event).
+    /// 
+    /// # Examples
+    /// ```
+    /// let raw_input = egui_system.take_egui_input();
+    /// let ctx = egui_system.context();
+    /// let full_output = ctx.run_ui(raw_input, |ui| {
+    ///     // modify ui here
+    /// });
+    /// // the output from run_ui must be provided here
+    /// egui_system.update_task_draw_data(
+    ///     &mut task_graph,
+    ///     full_output,
+    /// );
+    /// ```
+    pub fn take_egui_input(&mut self) -> egui::RawInput {
+        self.egui_winit.take_egui_input(surface_window(&self.surface))
+    }
+
     /// Extracts the draw data for the frame, updates textures, and sends mesh primitive data required for rendering
     /// to [`RenderEguiTask`].
-    pub fn update_task_draw_data(&mut self, task_graph: &mut ExecutableTaskGraph<W>) {
-        let (clipped_meshes, textures_delta) = self.extract_draw_data_at_frame_end();
+    pub fn update_task_draw_data(
+        &mut self,
+        task_graph: &mut ExecutableTaskGraph<W>,
+        full_output: FullOutput,
+    ) {
+        let (clipped_meshes, textures_delta) = self.extract_draw_data(
+            full_output,
+        );
 
         self.update_textures(&textures_delta.set).unwrap();
 
@@ -895,60 +944,23 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         egui_winit::pixels_per_point(&self.egui_ctx, surface_window(&self.surface))
     }
 
-    /// Updates context state by winit window event.
-    /// Returns `true` if egui wants exclusive use of this event
-    /// (e.g. a mouse click on an egui window, or entering text into a text field).
-    /// For instance, if you use egui for a game, you want to first call this
-    /// and only when this returns `false` pass on the events to your game.
-    ///
-    /// Note that egui uses `tab` to move focus between elements, so this will always return `true` for tabs.
-    pub fn update(&mut self, winit_event: &winit::event::WindowEvent) -> bool {
-        self.egui_winit.on_window_event(surface_window(&self.surface), winit_event).consumed
-    }
-
-    /// Begins Egui frame & runs the ui code for one frame.
-    /// This must be called before `draw`, and after `update` (winit event).
-    pub fn run_ui(&mut self, run_ui: impl FnMut(&mut egui::Ui)) -> egui::FullOutput {
-        let raw_input = self.egui_winit.take_egui_input(surface_window(&self.surface));
-        self.egui_ctx.run_ui(raw_input, run_ui)
-    }
-
-    /// Begins Egui frame by extracting the accumulated input.
-    /// This must be called before `draw`, and after `update` (winit event).
-    /// 
-    /// # Examples
-    /// ```
-    /// let raw_input = egui_system.take_egui_input();
-    /// let ctx = egui_system.context();
-    /// ctx.run_ui(raw_input, |ui| {
-    ///     // modify ui here
-    /// });
-    /// ```
-    pub fn take_egui_input(&mut self) -> egui::RawInput {
-        self.egui_winit.take_egui_input(surface_window(&self.surface))
-    }
-
-    fn extract_draw_data_at_frame_end(&mut self) -> (Vec<ClippedPrimitive>, TexturesDelta) {
-        self.end_frame();
-        let shapes = std::mem::take(&mut self.shapes);
-        let textures_delta = std::mem::take(&mut self.textures_delta);
-        let clipped_meshes = self.egui_ctx.tessellate(shapes, self.pixels_per_point());
-
-        (clipped_meshes, textures_delta)
-    }
-
-    fn end_frame(&mut self) {
+    fn extract_draw_data(
+        &mut self,
+        full_output: FullOutput,
+    ) -> (Vec<ClippedPrimitive>, TexturesDelta) {
         let egui::FullOutput {
             platform_output,
             textures_delta,
             shapes,
             pixels_per_point: _,
             viewport_output: _,
-        } = self.egui_ctx.end_pass();
+        } = full_output;
 
         self.egui_winit.handle_platform_output(surface_window(&self.surface), platform_output);
-        self.shapes = shapes;
-        self.textures_delta = textures_delta;
+
+        let clipped_meshes = self.egui_ctx.tessellate(shapes, self.pixels_per_point());
+
+        (clipped_meshes, textures_delta)
     }
 
     /// Access egui's context (which can be used to e.g. set fonts, visuals etc)
