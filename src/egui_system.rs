@@ -139,9 +139,9 @@ pub enum EguiSystemError {
     TransferNotSupported,
     ImageCreationError(ImageCreationError),
     HandleError(Validated<HandleError>),
-    Vulkan(Validated<VulkanError>),
-    AllocateBuffer(Validated<AllocateBufferError>),
-    AllocateImage(Validated<AllocateImageError>),
+    Vulkan(VulkanError),
+    AllocateBuffer(AllocateBufferError),
+    AllocateImage(AllocateImageError),
 }
 
 impl Debug for EguiSystemError {
@@ -235,7 +235,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let max_texture_side = physical_device.properties().max_image_dimension2_d as usize;
 
         let presentation_support = physical_device
-            .presentation_support(queue_index, event_loop)
+            .try_presentation_support(queue_index, event_loop)
             .map_err(|err| EguiSystemError::HandleError(err))?;
         if !presentation_support {
             return Err(EguiSystemError::PresentationNotSupported);
@@ -270,7 +270,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             mipmap_mode: SamplerMipmapMode::Linear,
             ..Default::default()
         })
-        .map_err(|err| EguiSystemError::Vulkan(err))?;
+        .map_err(EguiSystemError::Vulkan)?;
 
         let font_sampler_id = if use_bindless {
             let bcx = resources.bindless_context().unwrap();
@@ -280,7 +280,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             None
         };
 
-        let flight = resources.flight(flight_id).unwrap();
+        let flight = resources.flight(flight_id);
         let frames_in_flight = flight.frame_count();
 
         let create_buffer_ids = |create_info, allocation_info, layout| {
@@ -335,7 +335,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                         }],
                         ..Default::default()
                     })
-                    .map_err(|err| EguiSystemError::Vulkan(err))?;
+                    .map_err(EguiSystemError::Vulkan)?;
 
                 let texture_descriptor_sets = AHashMap::default();
 
@@ -433,7 +433,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             .downcast_mut::<RenderEguiTask<W>>()
             .unwrap()
             .create_pipeline(resources, device, &subpass, self.config.use_bindless)
-            .map_err(|err| EguiSystemError::Vulkan(err))?;
+            .map_err(|err| EguiSystemError::Vulkan(err.unwrap()))?;
 
         Ok(())
     }
@@ -539,7 +539,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             if let EguiTexture::Raw { ref image_view, ref sampler } = egui_texture {
                 let descriptor_set = self
                     .sampled_image_descriptor_set(image_view, sampler)
-                    .map_err(|err| EguiSystemError::Vulkan(err))?;
+                    .map_err(|err| EguiSystemError::Vulkan(err.unwrap()))?;
                 self.texture_descriptor_sets.as_mut().unwrap().insert(id, descriptor_set);
             }
         }
@@ -582,7 +582,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         };
 
         let sampler = Sampler::new(self.queue.device(), &sampler_create_info)
-            .map_err(|err| EguiSystemError::Vulkan(err))?;
+            .map_err(EguiSystemError::Vulkan)?;
 
         let egui_texture = self.get_egui_texture(image_view, sampler);
         let texture_id = self.register_image(image_id, egui_texture)?;
@@ -619,7 +619,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         };
 
         let sampler = Sampler::new(self.queue.device(), &sampler_create_info)
-            .map_err(|err| EguiSystemError::Vulkan(err))?;
+            .map_err(EguiSystemError::Vulkan)?;
 
         let egui_texture = self.get_egui_texture(image_view, sampler);
         let texture_id = self.register_image(image_id, egui_texture)?;
@@ -762,12 +762,12 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                 _ => ComponentMapping::identity(),
             };
 
-            let image = self.resources.image(new_image_id).unwrap().image().clone();
+            let image = self.resources.image(new_image_id).image().clone();
             let image_view = ImageView::new(&image, &ImageViewCreateInfo {
                 component_mapping,
                 ..ImageViewCreateInfo::from_image(&image)
             })
-            .map_err(ImageCreationError::Vulkan)?;
+            .map_err(|err| ImageCreationError::Vulkan(Validated::Error(err)))?;
 
             let new_egui_texture = if self.config.use_bindless {
                 let bcx = self.resources.bindless_context().unwrap();
@@ -786,7 +786,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             (true, (new_image_id, new_egui_texture))
         };
 
-        let flight = self.resources.flight(self.flight_id).unwrap();
+        let flight = self.resources.flight(self.flight_id);
         flight.wait(None).unwrap();
 
         // SAFETY:
@@ -799,12 +799,12 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                 &self.resources,
                 self.flight_id,
                 |builder, task_context| {
-                    let write = task_context.write_buffer::<[u8]>(buffer_id, range.clone())?;
+                    let write = task_context.try_write_buffer::<[u8]>(buffer_id, range.clone())?;
                     write.copy_from_slice(&bytes);
 
                     if is_new_image {
                         // Defer upload of data
-                        builder.copy_buffer_to_image(&CopyBufferToImageInfo {
+                        builder.try_copy_buffer_to_image(&CopyBufferToImageInfo {
                             src_buffer: buffer_id,
                             dst_image: new_image_id,
                             regions: &[BufferImageCopy {
@@ -823,7 +823,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                     } else {
                         let pos = delta.pos.unwrap();
                         // Defer upload of data
-                        builder.copy_buffer_to_image(&CopyBufferToImageInfo {
+                        builder.try_copy_buffer_to_image(&CopyBufferToImageInfo {
                             src_buffer: buffer_id,
                             dst_image: new_image_id,
                             regions: &[BufferImageCopy {
@@ -932,7 +932,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
         if self.staging_allocator.is_some() {
             // Wait to ensure the staging allocator is reset.
-            let flight = self.resources.flight(self.flight_id).unwrap();
+            let flight = self.resources.flight(self.flight_id);
             flight.wait(None).unwrap();
         }
 
@@ -1000,10 +1000,10 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let frame = task_context.current_frame_index() as usize;
 
         let vertex_buffer = self.vertex_buffer_ids[frame];
-        let vertices = task_context.write_buffer::<[EpaintVertex]>(
+        let vertices = task_context.try_write_buffer::<[EpaintVertex]>(
             vertex_buffer,
             0..(total_vertices.min(self.config.max_vertices) * size_of::<EpaintVertex>()) as u64,
-        )?;
+        ).map_err(|err| err.unwrap())?;
 
         vertices
             .iter_mut()
@@ -1011,10 +1011,10 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             .for_each(|(into, from)| *into = from);
 
         let index_buffer = self.index_buffer_ids[frame];
-        let indices = task_context.write_buffer::<[Index]>(
+        let indices = task_context.try_write_buffer::<[Index]>(
             self.index_buffer_ids[frame],
             0..(total_indices.min(self.config.max_indices) * size_of::<Index>()) as u64,
-        )?;
+        ).map_err(|err| err.unwrap())?;
 
         indices
             .iter_mut()
@@ -1045,15 +1045,15 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> RenderEguiTask<W> {
     ) -> Result<(), Validated<VulkanError>> {
         self.pipeline = Some({
             let (vs, fs) = if use_bindless {
-                (
+                unsafe { (
                     render_egui_bindless_vs::load(device)?.entry_point("main").unwrap(),
                     render_egui_bindless_fs::load(device)?.entry_point("main").unwrap(),
-                )
+                ) }
             } else {
-                (
+                unsafe { (
                     render_egui_vs::load(device)?.entry_point("main").unwrap(),
                     render_egui_fs::load(device)?.entry_point("main").unwrap(),
-                )
+                ) }
             };
 
             let blend = AttachmentBlend {
@@ -1122,7 +1122,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
             return Ok(());
         };
 
-        let swapchain_state = task_context.swapchain(swapchain_id)?;
+        let swapchain_state = task_context.try_swapchain(swapchain_id)?;
         let Some(image_index) = swapchain_state.current_image_index() else {
             return Ok(());
         };
@@ -1134,7 +1134,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
         };
 
         if let Some(debug_utils_label) = &egui_system.config.debug_utils {
-            builder.as_raw().begin_debug_utils_label(debug_utils_label)?;
+            builder.as_raw().try_begin_debug_utils_label(debug_utils_label)?;
         }
 
         let scale_factor = egui_system.pixels_per_point();
@@ -1178,15 +1178,15 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
                             unreachable!()
                         };
 
-                        builder.set_viewport(0, &[Viewport {
+                        builder.try_set_viewport(0, &[Viewport {
                             extent: [extent[0] as f32, extent[1] as f32],
                             ..Viewport::new()
                         }])?;
-                        builder.bind_pipeline_graphics(pipeline)?;
+                        builder.try_bind_pipeline_graphics(pipeline)?;
 
                         builder
-                            .bind_index_buffer(index_buffer, 0, None, IndexType::U32)?
-                            .bind_vertex_buffers(0, &[vertex_buffer], &[0], &[], &[])?;
+                            .try_bind_index_buffer(index_buffer, 0, None, IndexType::U32)?
+                            .try_bind_vertex_buffers(0, &[vertex_buffer], &[0], &[], &[])?;
                     }
                     // Find and bind image, if different.
                     if current_texture != Some(mesh.texture_id) {
@@ -1200,7 +1200,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
                             if let EguiTexture::Bindless { sampled_image_id, sampler_id } =
                                 texture_id.1
                             {
-                                builder.as_raw().push_constants(
+                                builder.as_raw().try_push_constants(
                                     pipeline.layout(),
                                     0,
                                     &render_egui_bindless_fs::PushConstants {
@@ -1229,7 +1229,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
                                 continue;
                             };
 
-                            builder.as_raw().bind_descriptor_sets(
+                            builder.as_raw().try_bind_descriptor_sets(
                                 PipelineBindPoint::Graphics,
                                 self.pipeline.as_ref().unwrap().layout(),
                                 0,
@@ -1237,7 +1237,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
                                 &[],
                             )?;
 
-                            builder.as_raw().push_constants(
+                            builder.as_raw().try_push_constants(
                                 pipeline.layout(),
                                 0,
                                 &render_egui_fs::PushConstants {
@@ -1252,11 +1252,11 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
                         current_rect = Some(*clip_rect);
                         let new_scissor = get_rect_scissor(scale_factor, extent, *clip_rect);
 
-                        builder.set_scissor(0, &[new_scissor])?;
+                        builder.try_set_scissor(0, &[new_scissor])?;
                     }
 
                     // All set up to draw!
-                    builder.draw_indexed(
+                    builder.try_draw_indexed(
                         mesh.indices.len() as u32,
                         1,
                         index_cursor,
@@ -1275,7 +1275,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
         }
 
         if egui_system.config.debug_utils.is_some() {
-            builder.as_raw().end_debug_utils_label()?;
+            builder.as_raw().try_end_debug_utils_label()?;
         }
 
         Ok(())
@@ -1301,33 +1301,33 @@ fn get_rect_scissor(scale_factor: f32, framebuffer_dimensions: [u32; 2], rect: R
     }
 }
 
-//helper to retrieve Window from surface object
+// helper to retrieve Window from surface object
 fn surface_window(surface: &Surface) -> &Window {
     surface.object().unwrap().downcast_ref::<Window>().unwrap()
 }
 
-// Bindful shaders:
+// bindful shaders:
 
 mod render_egui_vs {
     vulkano_shaders::shader! {
         ty: "vertex",
-        path: "./src/render_egui/egui_vs.glsl",
+        path: "src/render_egui/egui_vs.glsl",
     }
 }
 
 mod render_egui_fs {
     vulkano_shaders::shader! {
         ty: "fragment",
-        path: "./src/render_egui/egui_fs.glsl",
+        path: "src/render_egui/egui_fs.glsl",
     }
 }
 
-// Bindless shaders:
+// bindless shaders:
 
 mod render_egui_bindless_vs {
     vulkano_shaders::shader! {
         ty: "vertex",
-        path: "./src/render_egui/egui_vs.glsl",
+        path: "src/render_egui/egui_vs.glsl",
         define: [("BINDLESS", "")],
     }
 }
@@ -1335,7 +1335,7 @@ mod render_egui_bindless_vs {
 mod render_egui_bindless_fs {
     vulkano_shaders::shader! {
         ty: "fragment",
-        path: "./src/render_egui/egui_fs.glsl",
+        path: "src/render_egui/egui_fs.glsl",
         define: [("BINDLESS", "")],
     }
 }

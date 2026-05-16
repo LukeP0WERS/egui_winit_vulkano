@@ -12,14 +12,9 @@ use std::sync::Arc;
 #[cfg(feature = "image")]
 use image::RgbaImage;
 use vulkano::{
-    buffer::{AllocateBufferError, Buffer, BufferCreateInfo, BufferUsage},
-    device::Queue,
-    image::{
-        view::{ImageView, ImageViewCreateInfo},
-        AllocateImageError, Image, ImageCreateInfo, ImageType, ImageUsage,
-    },
-    memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter},
-    Validated, VulkanError,
+    Validated, VulkanError, buffer::{AllocateBufferError, Buffer, BufferCreateInfo, BufferUsage}, device::Queue, image::{
+        AllocateImageError, Image, ImageCreateInfo, ImageType, ImageUsage, view::{ImageView, ImageViewCreateInfo}
+    }, memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter}
 };
 use vulkano_taskgraph::{
     command_buffer::CopyBufferToImageInfo,
@@ -55,8 +50,8 @@ pub fn premultiply_rgba(pixels: &mut [u8]) {
 #[derive(Debug)]
 pub enum ImageCreationError {
     Vulkan(Validated<VulkanError>),
-    AllocateBuffer(Validated<AllocateBufferError>),
-    AllocateImage(Validated<AllocateImageError>),
+    AllocateBuffer(AllocateBufferError),
+    AllocateImage(AllocateImageError),
     ExecuteError(ExecuteError),
 }
 
@@ -123,11 +118,11 @@ pub unsafe fn immutable_texture_from_bytes<W: 'static + ?Sized>(
         )
         .map_err(ImageCreationError::AllocateImage)?;
 
-    let image = resources.image(texture_id).unwrap().image().clone();
+    let image = resources.image(texture_id).image().clone();
     let image_view = ImageView::new(&image, &ImageViewCreateInfo::from_image(&image))
-        .map_err(ImageCreationError::Vulkan)?;
+        .map_err(|err| ImageCreationError::Vulkan(Validated::Error(err)))?;
 
-    let flight = resources.flight(flight_id).unwrap();
+    let flight = resources.flight(flight_id);
     flight.wait(None).unwrap();
 
     // SAFETY:
@@ -139,16 +134,15 @@ pub unsafe fn immutable_texture_from_bytes<W: 'static + ?Sized>(
             &resources.clone(),
             flight_id,
             |builder, task_context| {
-                let write_buffer = task_context.write_buffer::<[u8]>(texture_data_buffer, ..)?;
+                let write_buffer = task_context.try_write_buffer::<[u8]>(texture_data_buffer, ..)?;
                 write_buffer.copy_from_slice(byte_data);
 
                 builder
-                    .copy_buffer_to_image(&CopyBufferToImageInfo {
+                    .try_copy_buffer_to_image(&CopyBufferToImageInfo {
                         src_buffer: texture_data_buffer,
                         dst_image: texture_id,
                         ..Default::default()
-                    })
-                    .unwrap();
+                    })?;
 
                 Ok(())
             },
