@@ -134,34 +134,6 @@ pub trait RenderEguiWorld<W: 'static + RenderEguiWorld<W> + ?Sized> {
     fn get_swapchain_id(&self) -> Id<Swapchain>;
 }
 
-pub enum EguiSystemError {
-    PresentationNotSupported,
-    TransferNotSupported,
-    ImageCreationError(ImageCreationError),
-    HandleError(Validated<HandleError>),
-    Vulkan(VulkanError),
-    AllocateBuffer(AllocateBufferError),
-    AllocateImage(AllocateImageError),
-}
-
-impl Debug for EguiSystemError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::PresentationNotSupported => {
-                f.write_str("The physical device must support presentation to the event loop!")
-            }
-            Self::TransferNotSupported => {
-                f.write_str("The queue provided must support transfer operations!")
-            }
-            Self::ImageCreationError(err) => err.fmt(f),
-            Self::HandleError(err) => err.fmt(f),
-            Self::Vulkan(err) => err.fmt(f),
-            Self::AllocateImage(err) => err.fmt(f),
-            Self::AllocateBuffer(err) => err.fmt(f),
-        }
-    }
-}
-
 /// `EguiSystem` is a rendering backend for egui which is meant to contain it's state and provide a
 /// means of integrating egui with an existing taskgraph. There are three functions which must be called
 /// to properly fully initialize `EguiSystem` after it has been created:
@@ -269,8 +241,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             address_mode: [SamplerAddressMode::ClampToEdge; 3],
             mipmap_mode: SamplerMipmapMode::Linear,
             ..Default::default()
-        })
-        .map_err(EguiSystemError::Vulkan)?;
+        })?;
 
         let font_sampler_id = if use_bindless {
             let bcx = resources.bindless_context().unwrap();
@@ -288,10 +259,10 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             for _ in 0..frames_in_flight {
                 let buffer_id = resources
                     .create_buffer(&create_info, &allocation_info, layout)
-                    .map_err(|err| EguiSystemError::AllocateBuffer(err))?;
+                    .map_err(|err| EguiSystemError::AllocateBufferError(err))?;
                 buffer_ids.push(buffer_id);
             }
-            Ok(buffer_ids)
+            Ok::<Vec<Id<Buffer>>, EguiSystemError>(buffer_ids)
         };
 
         let vertex_buffer_ids = create_buffer_ids(
@@ -334,8 +305,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
                             ..DescriptorSetLayoutBinding::new(DescriptorType::CombinedImageSampler)
                         }],
                         ..Default::default()
-                    })
-                    .map_err(EguiSystemError::Vulkan)?;
+                    })?;
 
                 let texture_descriptor_sets = AHashMap::default();
 
@@ -432,8 +402,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             .task_mut()
             .downcast_mut::<RenderEguiTask<W>>()
             .unwrap()
-            .create_pipeline(resources, device, &subpass, self.config.use_bindless)
-            .map_err(|err| EguiSystemError::Vulkan(err.unwrap()))?;
+            .create_pipeline(resources, device, &subpass, self.config.use_bindless)?;
 
         Ok(())
     }
@@ -538,8 +507,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         if !self.config.use_bindless {
             if let EguiTexture::Raw { ref image_view, ref sampler } = egui_texture {
                 let descriptor_set = self
-                    .sampled_image_descriptor_set(image_view, sampler)
-                    .map_err(|err| EguiSystemError::Vulkan(err.unwrap()))?;
+                    .sampled_image_descriptor_set(image_view, sampler)?;
                 self.texture_descriptor_sets.as_mut().unwrap().insert(id, descriptor_set);
             }
         }
@@ -581,8 +549,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             .map_err(|err| EguiSystemError::ImageCreationError(err))?
         };
 
-        let sampler = Sampler::new(self.queue.device(), &sampler_create_info)
-            .map_err(EguiSystemError::Vulkan)?;
+        let sampler = Sampler::new(self.queue.device(), &sampler_create_info)?;
 
         let egui_texture = self.get_egui_texture(image_view, sampler);
         let texture_id = self.register_image(image_id, egui_texture)?;
@@ -618,8 +585,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             .map_err(|err| EguiSystemError::ImageCreationError(err))?
         };
 
-        let sampler = Sampler::new(self.queue.device(), &sampler_create_info)
-            .map_err(EguiSystemError::Vulkan)?;
+        let sampler = Sampler::new(self.queue.device(), &sampler_create_info)?;
 
         let egui_texture = self.get_egui_texture(image_view, sampler);
         let texture_id = self.register_image(image_id, egui_texture)?;
@@ -749,7 +715,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             let new_image_id = self
                 .resources
                 .create_image(create_info, allocation_info)
-                .map_err(ImageCreationError::AllocateImage)?;
+                .map_err(ImageCreationError::AllocateImageError)?;
 
             // Swizzle packed font images up to a full premul white.
             let component_mapping = match format {
@@ -766,8 +732,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             let image_view = ImageView::new(&image, &ImageViewCreateInfo {
                 component_mapping,
                 ..ImageViewCreateInfo::from_image(&image)
-            })
-            .map_err(|err| ImageCreationError::Vulkan(Validated::Error(err)))?;
+            })?;
 
             let new_egui_texture = if self.config.use_bindless {
                 let bcx = self.resources.bindless_context().unwrap();
@@ -855,9 +820,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         if is_new_image {
             if !self.config.use_bindless {
                 if let EguiTexture::Raw { ref image_view, ref sampler } = new_egui_texture {
-                    let descriptor_set = self
-                        .sampled_image_descriptor_set(image_view, sampler)
-                        .map_err(|err| ImageCreationError::Vulkan(err))?;
+                    let descriptor_set = self.sampled_image_descriptor_set(image_view, sampler)?;
                     self.texture_descriptor_sets.as_mut().unwrap().insert(id, descriptor_set);
                 }
             }
@@ -897,12 +860,12 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
             if let Some(staging_allocator) = self.staging_allocator.as_ref() {
                 let buffer = Buffer::new(staging_allocator, create_info, allocation_info, layout)
-                    .map_err(|err| EguiSystemError::AllocateBuffer(err))?;
+                    .map_err(|err| EguiSystemError::AllocateBufferError(err))?;
                 self.resources.add_buffer(buffer)
             } else {
                 self.resources
                     .create_buffer(create_info, allocation_info, layout)
-                    .map_err(|err| EguiSystemError::AllocateBuffer(err))?
+                    .map_err(|err| EguiSystemError::AllocateBufferError(err))?
             }
         };
 
@@ -1298,6 +1261,48 @@ fn get_rect_scissor(scale_factor: f32, framebuffer_dimensions: [u32; 2], rect: R
     Scissor {
         offset: [min.x.round() as u32, min.y.round() as u32],
         extent: [(max.x.round() - min.x) as u32, (max.y.round() - min.y) as u32],
+    }
+}
+
+pub enum EguiSystemError {
+    PresentationNotSupported,
+    TransferNotSupported,
+    ImageCreationError(ImageCreationError),
+    HandleError(Validated<HandleError>),
+    ValidationError(Validated<VulkanError>),
+    VulkanError(VulkanError),
+    AllocateImageError(AllocateImageError),
+    AllocateBufferError(AllocateBufferError),
+}
+
+impl From<Validated<VulkanError>> for EguiSystemError {
+    fn from(error: Validated<VulkanError>) -> Self {
+        Self::ValidationError(error)
+    }
+}
+
+impl From<VulkanError> for EguiSystemError {
+    fn from(error: VulkanError) -> Self {
+        Self::VulkanError(error)
+    }
+}
+
+impl Debug for EguiSystemError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PresentationNotSupported => {
+                f.write_str("The physical device must support presentation to the event loop!")
+            }
+            Self::TransferNotSupported => {
+                f.write_str("The queue provided must support transfer operations!")
+            }
+            Self::ImageCreationError(err) => err.fmt(f),
+            Self::HandleError(err) => err.fmt(f),
+            Self::ValidationError(err) => err.fmt(f),
+            Self::VulkanError(err) => err.fmt(f),
+            Self::AllocateImageError(err) => err.fmt(f),
+            Self::AllocateBufferError(err) => err.fmt(f),
+        }
     }
 }
 

@@ -49,10 +49,23 @@ pub fn premultiply_rgba(pixels: &mut [u8]) {
 
 #[derive(Debug)]
 pub enum ImageCreationError {
-    Vulkan(Validated<VulkanError>),
-    AllocateBuffer(AllocateBufferError),
-    AllocateImage(AllocateImageError),
+    ValidationError(Validated<VulkanError>),
+    VulkanError(VulkanError),
+    AllocateBufferError(AllocateBufferError),
+    AllocateImageError(AllocateImageError),
     ExecuteError(ExecuteError),
+}
+
+impl From<Validated<VulkanError>> for ImageCreationError {
+    fn from(error: Validated<VulkanError>) -> Self {
+        Self::ValidationError(error)
+    }
+}
+
+impl From<VulkanError> for ImageCreationError {
+    fn from(error: VulkanError) -> Self {
+        Self::VulkanError(error)
+    }
 }
 
 /// Creates an image resource and uploads data to it from raw byte data.
@@ -96,12 +109,12 @@ pub unsafe fn immutable_texture_from_bytes<W: 'static + ?Sized>(
                 &allocation_info,
                 device_layout,
             )
-            .map_err(ImageCreationError::AllocateBuffer)?;
+            .map_err(ImageCreationError::AllocateBufferError)?;
             resources.add_buffer(texture_buffer)
         } else {
             resources
                 .create_buffer(&buffer_create_info, &allocation_info, device_layout)
-                .map_err(ImageCreationError::AllocateBuffer)?
+                .map_err(ImageCreationError::AllocateBufferError)?
         }
     };
 
@@ -116,11 +129,10 @@ pub unsafe fn immutable_texture_from_bytes<W: 'static + ?Sized>(
             },
             &AllocationCreateInfo::default(),
         )
-        .map_err(ImageCreationError::AllocateImage)?;
+        .map_err(ImageCreationError::AllocateImageError)?;
 
     let image = resources.image(texture_id).image().clone();
-    let image_view = ImageView::new(&image, &ImageViewCreateInfo::from_image(&image))
-        .map_err(|err| ImageCreationError::Vulkan(Validated::Error(err)))?;
+    let image_view = ImageView::new(&image, &ImageViewCreateInfo::from_image(&image))?;
 
     let flight = resources.flight(flight_id);
     flight.wait(None).unwrap();
