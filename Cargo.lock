@@ -2899,7 +2899,7 @@ dependencies = [
 [[package]]
 name = "vulkano"
 version = "0.35.0"
-source = "git+https://github.com/vulkano-rs/vulkano.git?branch=master#0c5353176dd3ded73845954c6a05e36509f81c18"
+source = "git+https://github.com/vulkano-rs/vulkano.git?rev=refs%2Fpull%2F2803%2Fhead#548bf39af0d7e06475791659ebc343e67676c1dd"
 dependencies = [
  "ash",
  "bytemuck",
@@ -2921,7 +2921,7 @@ dependencies = [
 [[package]]
 name = "vulkano-macros"
 version = "0.35.0"
-source = "git+https://github.com/vulkano-rs/vulkano.git?branch=master#0c5353176dd3ded73845954c6a05e36509f81c18"
+source = "git+https://github.com/vulkano-rs/vulkano.git?rev=refs%2Fpull%2F2803%2Fhead#548bf39af0d7e06475791659ebc343e67676c1dd"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2932,7 +2932,7 @@ dependencies = [
 [[package]]
 name = "vulkano-shaders"
 version = "0.35.0"
-source = "git+https://github.com/vulkano-rs/vulkano.git?branch=master#0c5353176dd3ded73845954c6a05e36509f81c18"
+source = "git+https://github.com/vulkano-rs/vulkano.git?rev=refs%2Fpull%2F2803%2Fhead#548bf39af0d7e06475791659ebc343e67676c1dd"
 dependencies = [
  "foldhash 0.1.5",
  "heck",
@@ -2945,7 +2945,7 @@ dependencies = [
 [[package]]
 name = "vulkano-taskgraph"
 version = "0.35.0"
-source = "git+https://github.com/vulkano-rs/vulkano.git?branch=master#0c5353176dd3ded73845954c6a05e36509f81c18"
+source = "git+https://github.com/vulkano-rs/vulkano.git?rev=refs%2Fpull%2F2803%2Fhead#548bf39af0d7e06475791659ebc343e67676c1dd"
 dependencies = [
  "ash",
  "bytemuck",

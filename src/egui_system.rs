@@ -10,7 +10,9 @@
 use std::{fmt::Debug, marker::PhantomData, ops::Range, sync::Arc};
 
 use egui::{
-    ClippedPrimitive, FullOutput, Rect, TexturesDelta, ahash::AHashMap, epaint::{Primitive, Vertex as EpaintVertex}
+    ahash::AHashMap,
+    epaint::{Primitive, Vertex as EpaintVertex},
+    ClippedPrimitive, FullOutput, Rect, TexturesDelta,
 };
 use vulkano::{
     buffer::{
@@ -398,16 +400,15 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
         let egui_node = task_graph.task_node_mut(node_id).unwrap();
         let subpass = egui_node.subpass().unwrap().clone();
-        egui_node
-            .task_mut()
-            .downcast_mut::<RenderEguiTask<W>>()
-            .unwrap()
-            .create_pipeline(resources, device, &subpass, self.config.use_bindless)?;
+        egui_node.task_mut().downcast_mut::<RenderEguiTask<W>>().unwrap().create_pipeline(
+            resources,
+            device,
+            &subpass,
+            self.config.use_bindless,
+        )?;
 
         Ok(())
     }
-
-    
 
     /// Updates context state by winit window event.
     /// Returns `true` if egui wants exclusive use of this event
@@ -422,7 +423,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
     /// Begins Egui frame & runs the ui code for one frame.
     /// This must be called before `draw`, and after `update` (winit event).
-    /// 
+    ///
     /// # Examples
     /// ```
     /// let full_output = ctx.run_ui(raw_input, |ui| {
@@ -440,7 +441,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
     /// Begins Egui frame by extracting the accumulated input.
     /// This must be called before `draw`, and after `update` (winit event).
-    /// 
+    ///
     /// # Examples
     /// ```
     /// let raw_input = egui_system.take_egui_input();
@@ -465,9 +466,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         task_graph: &mut ExecutableTaskGraph<W>,
         full_output: FullOutput,
     ) {
-        let (clipped_meshes, textures_delta) = self.extract_draw_data(
-            full_output,
-        );
+        let (clipped_meshes, textures_delta) = self.extract_draw_data(full_output);
 
         self.update_textures(&textures_delta.set).unwrap();
 
@@ -506,8 +505,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
         if !self.config.use_bindless {
             if let EguiTexture::Raw { ref image_view, ref sampler } = egui_texture {
-                let descriptor_set = self
-                    .sampled_image_descriptor_set(image_view, sampler)?;
+                let descriptor_set = self.sampled_image_descriptor_set(image_view, sampler)?;
                 self.texture_descriptor_sets.as_mut().unwrap().insert(id, descriptor_set);
             }
         }
@@ -963,10 +961,13 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let frame = task_context.current_frame_index() as usize;
 
         let vertex_buffer = self.vertex_buffer_ids[frame];
-        let vertices = task_context.try_write_buffer::<[EpaintVertex]>(
-            vertex_buffer,
-            0..(total_vertices.min(self.config.max_vertices) * size_of::<EpaintVertex>()) as u64,
-        ).map_err(|err| err.unwrap())?;
+        let vertices = task_context
+            .try_write_buffer::<[EpaintVertex]>(
+                vertex_buffer,
+                0..(total_vertices.min(self.config.max_vertices) * size_of::<EpaintVertex>())
+                    as u64,
+            )
+            .map_err(|err| err.unwrap())?;
 
         vertices
             .iter_mut()
@@ -974,10 +975,12 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             .for_each(|(into, from)| *into = from);
 
         let index_buffer = self.index_buffer_ids[frame];
-        let indices = task_context.try_write_buffer::<[Index]>(
-            self.index_buffer_ids[frame],
-            0..(total_indices.min(self.config.max_indices) * size_of::<Index>()) as u64,
-        ).map_err(|err| err.unwrap())?;
+        let indices = task_context
+            .try_write_buffer::<[Index]>(
+                self.index_buffer_ids[frame],
+                0..(total_indices.min(self.config.max_indices) * size_of::<Index>()) as u64,
+            )
+            .map_err(|err| err.unwrap())?;
 
         indices
             .iter_mut()
@@ -1008,15 +1011,19 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> RenderEguiTask<W> {
     ) -> Result<(), Validated<VulkanError>> {
         self.pipeline = Some({
             let (vs, fs) = if use_bindless {
-                unsafe { (
-                    render_egui_bindless_vs::load(device)?.entry_point("main").unwrap(),
-                    render_egui_bindless_fs::load(device)?.entry_point("main").unwrap(),
-                ) }
+                unsafe {
+                    (
+                        render_egui_bindless_vs::load(device)?.entry_point("main").unwrap(),
+                        render_egui_bindless_fs::load(device)?.entry_point("main").unwrap(),
+                    )
+                }
             } else {
-                unsafe { (
-                    render_egui_vs::load(device)?.entry_point("main").unwrap(),
-                    render_egui_fs::load(device)?.entry_point("main").unwrap(),
-                ) }
+                unsafe {
+                    (
+                        render_egui_vs::load(device)?.entry_point("main").unwrap(),
+                        render_egui_fs::load(device)?.entry_point("main").unwrap(),
+                    )
+                }
             };
 
             let blend = AttachmentBlend {

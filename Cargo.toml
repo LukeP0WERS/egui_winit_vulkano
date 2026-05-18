@@ -24,9 +24,9 @@ egui-winit = { version = "0.34", default-features = false }
 egui = "0.34"
 image = { version = "0.25", optional = true }
 winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
-vulkano =           { git = "https://github.com/vulkano-rs/vulkano.git", branch = "master" }
-vulkano-shaders =   { git = "https://github.com/vulkano-rs/vulkano.git", branch = "master" }
-vulkano-taskgraph = { git = "https://github.com/vulkano-rs/vulkano.git", branch = "master" }
+vulkano =           { git = "https://github.com/vulkano-rs/vulkano.git", rev = "refs/pull/2803/head" }
+vulkano-shaders =   { git = "https://github.com/vulkano-rs/vulkano.git", rev = "refs/pull/2803/head" }
+vulkano-taskgraph = { git = "https://github.com/vulkano-rs/vulkano.git", rev = "refs/pull/2803/head" }
 
 [dev-dependencies]
 cgmath = "0.18.0"

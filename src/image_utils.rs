@@ -12,9 +12,14 @@ use std::sync::Arc;
 #[cfg(feature = "image")]
 use image::RgbaImage;
 use vulkano::{
-    Validated, VulkanError, buffer::{AllocateBufferError, Buffer, BufferCreateInfo, BufferUsage}, device::Queue, image::{
-        AllocateImageError, Image, ImageCreateInfo, ImageType, ImageUsage, view::{ImageView, ImageViewCreateInfo}
-    }, memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter}
+    buffer::{AllocateBufferError, Buffer, BufferCreateInfo, BufferUsage},
+    device::Queue,
+    image::{
+        view::{ImageView, ImageViewCreateInfo},
+        AllocateImageError, Image, ImageCreateInfo, ImageType, ImageUsage,
+    },
+    memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter},
+    Validated, VulkanError,
 };
 use vulkano_taskgraph::{
     command_buffer::CopyBufferToImageInfo,
@@ -146,15 +151,15 @@ pub unsafe fn immutable_texture_from_bytes<W: 'static + ?Sized>(
             &resources.clone(),
             flight_id,
             |builder, task_context| {
-                let write_buffer = task_context.try_write_buffer::<[u8]>(texture_data_buffer, ..)?;
+                let write_buffer =
+                    task_context.try_write_buffer::<[u8]>(texture_data_buffer, ..)?;
                 write_buffer.copy_from_slice(byte_data);
 
-                builder
-                    .try_copy_buffer_to_image(&CopyBufferToImageInfo {
-                        src_buffer: texture_data_buffer,
-                        dst_image: texture_id,
-                        ..Default::default()
-                    })?;
+                builder.try_copy_buffer_to_image(&CopyBufferToImageInfo {
+                    src_buffer: texture_data_buffer,
+                    dst_image: texture_id,
+                    ..Default::default()
+                })?;
 
                 Ok(())
             },
