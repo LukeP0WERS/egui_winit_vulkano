@@ -1323,14 +1323,14 @@ fn surface_window(surface: &Surface) -> &Window {
 mod render_egui_vs {
     vulkano_shaders::shader! {
         ty: "vertex",
-        path: "src/render_egui/egui_vs.glsl",
+        path: "render_egui/egui_vs.glsl",
     }
 }
 
 mod render_egui_fs {
     vulkano_shaders::shader! {
         ty: "fragment",
-        path: "src/render_egui/egui_fs.glsl",
+        path: "render_egui/egui_fs.glsl",
     }
 }
 
@@ -1339,7 +1339,7 @@ mod render_egui_fs {
 mod render_egui_bindless_vs {
     vulkano_shaders::shader! {
         ty: "vertex",
-        path: "src/render_egui/egui_vs.glsl",
+        path: "render_egui/egui_vs.glsl",
         define: [("BINDLESS", "")],
     }
 }
@@ -1347,7 +1347,7 @@ mod render_egui_bindless_vs {
 mod render_egui_bindless_fs {
     vulkano_shaders::shader! {
         ty: "fragment",
-        path: "src/render_egui/egui_fs.glsl",
+        path: "render_egui/egui_fs.glsl",
         define: [("BINDLESS", "")],
     }
 }
