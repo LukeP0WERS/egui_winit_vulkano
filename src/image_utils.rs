@@ -78,7 +78,7 @@ impl From<VulkanError> for ImageCreationError {
 /// # Safety
 ///
 /// - The user must ensure the queue supports transfer operations.
-pub unsafe fn immutable_texture_from_bytes<W: 'static + ?Sized>(
+pub unsafe fn immutable_texture_from_bytes(
     queue: &Arc<Queue>,
     resources: &Arc<Resources>,
     flight_id: Id<Flight>,
@@ -193,7 +193,7 @@ pub unsafe fn immutable_texture_from_bytes<W: 'static + ?Sized>(
 /// # Safety
 ///
 /// - The user must ensure the queue supports transfer operations.
-pub unsafe fn immutable_texture_from_file<W: 'static + ?Sized>(
+pub unsafe fn immutable_texture_from_file(
     queue: &Arc<Queue>,
     resources: &Arc<Resources>,
     flight_id: Id<Flight>,
@@ -222,7 +222,7 @@ pub unsafe fn immutable_texture_from_file<W: 'static + ?Sized>(
     };
     let dimensions = img.dimensions();
 
-    immutable_texture_from_bytes::<W>(
+    immutable_texture_from_bytes(
         queue,
         resources,
         flight_id,

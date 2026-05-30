@@ -517,7 +517,7 @@ impl EguiSystem {
     /// and [`image::DynamicImage::as_rgba8`].
     ///
     #[cfg(feature = "image")]
-    pub fn register_user_image<W: 'static>(
+    pub fn register_user_image(
         &mut self,
         image_file_bytes: &[u8],
         alpha_mode: AlphaMode,
@@ -527,7 +527,7 @@ impl EguiSystem {
         // SAFETY: `EguiSystem` cannot be successfully created with a queue that
         // doesn't support transfer operations.
         let (image_id, image_view) = unsafe {
-            immutable_texture_from_file::<W>(
+            immutable_texture_from_file(
                 &self.queue,
                 &self.resources,
                 self.flight_id,
@@ -551,7 +551,7 @@ impl EguiSystem {
     /// - `image_file_bytes`: e.g. include_bytes!("./assets/tree.png")
     /// - `format`: e.g. vulkano::format::Format::R8G8B8A8Unorm
     ///
-    pub fn register_user_image_from_bytes<W: 'static>(
+    pub fn register_user_image_from_bytes(
         &mut self,
         image_byte_data: &[u8],
         dimensions: [u32; 2],
@@ -562,7 +562,7 @@ impl EguiSystem {
         // SAFETY: `EguiSystem` cannot be successfully created with a queue that
         // doesn't support transfer operations.
         let (image_id, image_view) = unsafe {
-            immutable_texture_from_bytes::<W>(
+            immutable_texture_from_bytes(
                 &self.queue,
                 &self.resources,
                 self.flight_id,
