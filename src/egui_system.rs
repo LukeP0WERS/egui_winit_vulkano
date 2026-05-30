@@ -346,7 +346,7 @@ impl EguiSystem {
         task_graph: &mut TaskGraph<W>,
         virtual_swapchain_id: Id<Swapchain>,
         virtual_framebuffer_id: Id<Framebuffer>,
-        extract_fn: ExtractEguiSystemFn<W>,
+        extract_fn: impl Fn(&W) -> &EguiSystem + 'static + Send + Sync,
     ) -> NodeId {
         for (vertex_id, index_id) in self.vertex_buffer_ids.iter().zip(&self.index_buffer_ids) {
             task_graph.add_host_buffer_access(*vertex_id, HostAccessType::Write);
@@ -357,7 +357,10 @@ impl EguiSystem {
         let mut task_node_builder = task_graph.create_task_node(
             "Render Egui",
             QueueFamilyType::Graphics,
-            RenderEguiTask::new(virtual_swapchain_id, extract_fn),
+            RenderEguiTask::new(
+                virtual_swapchain_id,
+                Box::new(extract_fn)
+            ),
         );
 
         for (vertex_id, index_id) in self.vertex_buffer_ids.iter().zip(&self.index_buffer_ids) {
