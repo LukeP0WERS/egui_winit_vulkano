@@ -1013,21 +1013,15 @@ impl<W: 'static + ?Sized> RenderEguiTask<W> {
         use_bindless: bool,
     ) -> Result<(), Validated<VulkanError>> {
         self.pipeline = Some({
-            let (vs, fs) = if use_bindless {
-                unsafe {
-                    (
-                        render_egui_bindless_vs::load(device)?.entry_point("main").unwrap(),
-                        render_egui_bindless_fs::load(device)?.entry_point("main").unwrap(),
-                    )
-                }
-            } else {
-                unsafe {
-                    (
-                        render_egui_vs::load(device)?.entry_point("main").unwrap(),
-                        render_egui_fs::load(device)?.entry_point("main").unwrap(),
-                    )
-                }
-            };
+
+            // SAFETY: The user must ensure their machine can load shader modules safely
+            let (vs, fs) = unsafe { if use_bindless { (
+                render_egui_bindless_vs::load(device)?.entry_point("main").unwrap(),
+                render_egui_bindless_fs::load(device)?.entry_point("main").unwrap(),
+            ) } else { (
+                render_egui_vs::load(device)?.entry_point("main").unwrap(),
+                render_egui_fs::load(device)?.entry_point("main").unwrap(),
+            ) } };
 
             let blend = AttachmentBlend {
                 src_color_blend_factor: BlendFactor::One,
