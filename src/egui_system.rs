@@ -129,32 +129,23 @@ pub enum EguiTexture {
     Bindless { sampled_image_id: SampledImageId, sampler_id: SamplerId },
 }
 
-/// Your task graph's world type needs to implement this to expose data
-/// needed during [RenderEguiTask] execution.
-pub trait RenderEguiWorld<W: 'static + RenderEguiWorld<W> + ?Sized> {
-    fn get_egui_system(&self) -> &EguiSystem<W>;
-    fn get_swapchain_id(&self) -> Id<Swapchain>;
-}
-
 /// `EguiSystem` is a rendering backend for egui which is meant to contain it's state and provide a
 /// means of integrating egui with an existing taskgraph. There are three functions which must be called
 /// to properly fully initialize `EguiSystem` after it has been created:
 ///
-/// - [`render_egui`] This must be called during task graph construction, it creates a taskgraph node forrendering egui and
+/// - [`render_egui`] This must be called during task graph construction, it creates a taskgraph node for rendering egui and
 /// returns it's NodeId for synchronization.
 /// - [`create_task_pipeline`] This must be called after task graph construction and requires access to `ExecutableTaskGraph`.
 /// - [`update_task_draw_data`] This should be called at the end every frame to update textures and mesh data.
 ///
 /// You need to use this with automatic render pass creation and it will render directly to the swapchain.
-pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
+pub struct EguiSystem {
     queue: Arc<Queue>,
     resources: Arc<Resources>,
     flight_id: Id<Flight>,
-    staging_allocator: Option<Arc<dyn MemoryAllocator>>,
-
     config: EguiSystemConfig,
-    output_in_linear_colorspace: bool,
 
+    output_in_linear_colorspace: bool,
     pub egui_ctx: egui::Context,
     pub egui_winit: egui_winit::State,
     surface: Arc<Surface>,
@@ -165,6 +156,7 @@ pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
     font_sampler: Arc<Sampler>,
     font_sampler_id: Option<SamplerId>,
 
+    staging_allocator: Option<Arc<dyn MemoryAllocator>>,
     descriptor_set_allocator: Option<Arc<StandardDescriptorSetAllocator>>,
     descriptor_set_layout: Option<Arc<DescriptorSetLayout>>,
     texture_descriptor_sets: Option<AHashMap<egui::TextureId, Arc<DescriptorSet>>>,
@@ -173,11 +165,9 @@ pub struct EguiSystem<W: 'static + RenderEguiWorld<W> + ?Sized> {
     next_native_tex_id: u64,
 
     egui_node_id: Option<NodeId>,
-
-    _marker: PhantomData<fn() -> W>,
 }
 
-impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
+impl EguiSystem {
     /// Creates a new EguiSystem for rendering to the task graph.
     /// - `event_loop`: The physical device that the [`Queue`] was created with must support
     /// presentation to the event loop provided.
@@ -191,8 +181,8 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         queue: &Arc<Queue>,
         resources: &Arc<Resources>,
         flight_id: Id<Flight>,
-        staging_allocator: Option<&Arc<impl MemoryAllocator>>,
         swapchain_format: Format,
+        staging_allocator: Option<&Arc<impl MemoryAllocator>>,
         config: EguiSystemConfig,
     ) -> Result<Self, EguiSystemError> {
         let use_bindless = config.use_bindless && resources.bindless_context().is_some();
@@ -324,7 +314,6 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             queue: queue.clone(),
             resources: resources.clone(),
             flight_id,
-            staging_allocator: staging_allocator.map(|x| x.clone().as_dyn()),
 
             config,
             output_in_linear_colorspace,
@@ -333,6 +322,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             egui_winit,
             surface: surface.clone(),
 
+            staging_allocator: staging_allocator.map(|x| x.clone().as_dyn()),
             vertex_buffer_ids,
             index_buffer_ids,
 
@@ -347,17 +337,16 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
             next_native_tex_id: 0,
 
             egui_node_id: None,
-
-            _marker: PhantomData,
         })
     }
 
     /// Creates [`RenderEguiTask`] and adds it to task graph for rendering
-    pub fn render_egui(
+    pub fn render_egui<W: 'static>(
         &mut self,
         task_graph: &mut TaskGraph<W>,
         virtual_swapchain_id: Id<Swapchain>,
         virtual_framebuffer_id: Id<Framebuffer>,
+        extract_fn: ExtractEguiSystemFn<W>,
     ) -> NodeId {
         for (vertex_id, index_id) in self.vertex_buffer_ids.iter().zip(&self.index_buffer_ids) {
             task_graph.add_host_buffer_access(*vertex_id, HostAccessType::Write);
@@ -368,7 +357,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
         let mut task_node_builder = task_graph.create_task_node(
             "Render Egui",
             QueueFamilyType::Graphics,
-            RenderEguiTask::new(),
+            RenderEguiTask::new(virtual_swapchain_id, extract_fn),
         );
 
         for (vertex_id, index_id) in self.vertex_buffer_ids.iter().zip(&self.index_buffer_ids) {
@@ -390,7 +379,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     }
 
     /// Creates the graphics pipeline for the task node, this **must** be called after taskgraph construction.
-    pub fn create_task_pipeline(
+    pub fn create_task_pipeline<W: 'static>(
         &mut self,
         task_graph: &mut ExecutableTaskGraph<W>,
         resources: &Arc<Resources>,
@@ -461,7 +450,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
 
     /// Extracts the draw data for the frame, updates textures, and sends mesh primitive data required for rendering
     /// to [`RenderEguiTask`].
-    pub fn update_task_draw_data(
+    pub fn update_task_draw_data<W: 'static>(
         &mut self,
         task_graph: &mut ExecutableTaskGraph<W>,
         full_output: FullOutput,
@@ -525,7 +514,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     /// and [`image::DynamicImage::as_rgba8`].
     ///
     #[cfg(feature = "image")]
-    pub fn register_user_image(
+    pub fn register_user_image<W: 'static>(
         &mut self,
         image_file_bytes: &[u8],
         alpha_mode: AlphaMode,
@@ -559,7 +548,7 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     /// - `image_file_bytes`: e.g. include_bytes!("./assets/tree.png")
     /// - `format`: e.g. vulkano::format::Format::R8G8B8A8Unorm
     ///
-    pub fn register_user_image_from_bytes(
+    pub fn register_user_image_from_bytes<W: 'static>(
         &mut self,
         image_byte_data: &[u8],
         dimensions: [u32; 2],
@@ -991,15 +980,29 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> EguiSystem<W> {
     }
 }
 
-pub struct RenderEguiTask<W: 'static + RenderEguiWorld<W> + ?Sized> {
+/// User provided function that extracts a reference to `EguiSystem` from the task world.
+pub type ExtractEguiSystemFn<W> = Box<dyn Fn(&W) -> &EguiSystem + Send + Sync>;
+
+pub struct RenderEguiTask<W: 'static + ?Sized> {
+    virtual_swapchain_id: Id<Swapchain>,
+    extract_fn: ExtractEguiSystemFn<W>,
     pipeline: Option<Arc<GraphicsPipeline>>,
     clipped_meshes: Option<Vec<ClippedPrimitive>>,
     _marker: PhantomData<fn() -> W>,
 }
 
-impl<W: 'static + RenderEguiWorld<W> + ?Sized> RenderEguiTask<W> {
-    pub fn new() -> RenderEguiTask<W> {
-        RenderEguiTask::<W> { pipeline: None, clipped_meshes: None, _marker: PhantomData }
+impl<W: 'static + ?Sized> RenderEguiTask<W> {
+    pub fn new(
+        virtual_swapchain_id: Id<Swapchain>,
+        extract_fn: ExtractEguiSystemFn<W>,
+    ) -> RenderEguiTask<W> {
+        RenderEguiTask::<W> {
+            virtual_swapchain_id,
+            extract_fn,
+            pipeline: None,
+            clipped_meshes: None,
+            _marker: PhantomData,
+        }
     }
 
     pub fn create_pipeline(
@@ -1077,22 +1080,21 @@ impl<W: 'static + RenderEguiWorld<W> + ?Sized> RenderEguiTask<W> {
     }
 }
 
-impl<W: 'static + RenderEguiWorld<W> + ?Sized> Task for RenderEguiTask<W> {
+impl<W: 'static + ?Sized> Task for RenderEguiTask<W> {
     type World = W;
 
     unsafe fn execute(
         &self,
         builder: &mut RecordingCommandBuffer<'_>,
         task_context: &mut TaskContext<'_>,
-        render_context: &Self::World,
+        world: &Self::World,
     ) -> TaskResult {
-        let egui_system = render_context.get_egui_system();
-        let swapchain_id = render_context.get_swapchain_id();
+        let egui_system = (self.extract_fn)(world);
         let Some(ref clipped_meshes) = self.clipped_meshes else {
             return Ok(());
         };
 
-        let swapchain_state = task_context.try_swapchain(swapchain_id)?;
+        let swapchain_state = task_context.try_swapchain(self.virtual_swapchain_id)?;
         let Some(image_index) = swapchain_state.current_image_index() else {
             return Ok(());
         };
@@ -1323,14 +1325,16 @@ fn surface_window(surface: &Surface) -> &Window {
 mod render_egui_vs {
     vulkano_shaders::shader! {
         ty: "vertex",
-        path: "render_egui/egui_vs.glsl",
+        path: "src/render_egui/egui_vs.glsl",
+        root_path_env: "CARGO_MANIFEST_DIR",
     }
 }
 
 mod render_egui_fs {
     vulkano_shaders::shader! {
         ty: "fragment",
-        path: "render_egui/egui_fs.glsl",
+        path: "src/render_egui/egui_fs.glsl",
+        root_path_env: "CARGO_MANIFEST_DIR",
     }
 }
 
@@ -1339,7 +1343,8 @@ mod render_egui_fs {
 mod render_egui_bindless_vs {
     vulkano_shaders::shader! {
         ty: "vertex",
-        path: "render_egui/egui_vs.glsl",
+        path: "src/render_egui/egui_vs.glsl",
+        root_path_env: "CARGO_MANIFEST_DIR",
         define: [("BINDLESS", "")],
     }
 }
@@ -1347,7 +1352,8 @@ mod render_egui_bindless_vs {
 mod render_egui_bindless_fs {
     vulkano_shaders::shader! {
         ty: "fragment",
-        path: "render_egui/egui_fs.glsl",
+        path: "src/render_egui/egui_fs.glsl",
+        root_path_env: "CARGO_MANIFEST_DIR",
         define: [("BINDLESS", "")],
     }
 }

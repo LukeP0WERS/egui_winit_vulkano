@@ -11,7 +11,7 @@ mod egui_system;
 mod image_utils;
 
 pub use egui_system::{
-    EguiSystem, EguiSystemConfig, EguiSystemError, EguiTexture, RenderEguiWorld,
+    EguiSystem, EguiSystemConfig, EguiSystemError, EguiTexture, ExtractEguiSystemFn,
 };
 #[cfg(feature = "image")]
 pub use image_utils::immutable_texture_from_file;
