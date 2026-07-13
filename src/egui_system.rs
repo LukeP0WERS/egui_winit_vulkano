@@ -60,7 +60,7 @@ use vulkano::{
     },
     render_pass::{Framebuffer, Subpass},
     shader::ShaderStages,
-    swapchain::{Surface, Swapchain},
+    swapchain::{Surface, SurfaceObject, Swapchain},
     Validated, VulkanError,
 };
 use vulkano_taskgraph::{
@@ -357,10 +357,7 @@ impl EguiSystem {
         let mut task_node_builder = task_graph.create_task_node(
             "Render Egui",
             QueueFamilyType::Graphics,
-            RenderEguiTask::new(
-                virtual_swapchain_id,
-                Box::new(extract_fn)
-            ),
+            RenderEguiTask::new(virtual_swapchain_id, Box::new(extract_fn)),
         );
 
         for (vertex_id, index_id) in self.vertex_buffer_ids.iter().zip(&self.index_buffer_ids) {
@@ -1016,15 +1013,20 @@ impl<W: 'static + ?Sized> RenderEguiTask<W> {
         use_bindless: bool,
     ) -> Result<(), Validated<VulkanError>> {
         self.pipeline = Some({
-
             // SAFETY: The user must ensure their machine can load shader modules safely
-            let (vs, fs) = unsafe { if use_bindless { (
-                render_egui_bindless_vs::load(device)?.entry_point("main").unwrap(),
-                render_egui_bindless_fs::load(device)?.entry_point("main").unwrap(),
-            ) } else { (
-                render_egui_vs::load(device)?.entry_point("main").unwrap(),
-                render_egui_fs::load(device)?.entry_point("main").unwrap(),
-            ) } };
+            let (vs, fs) = unsafe {
+                if use_bindless {
+                    (
+                        render_egui_bindless_vs::load(device)?.entry_point("main").unwrap(),
+                        render_egui_bindless_fs::load(device)?.entry_point("main").unwrap(),
+                    )
+                } else {
+                    (
+                        render_egui_vs::load(device)?.entry_point("main").unwrap(),
+                        render_egui_fs::load(device)?.entry_point("main").unwrap(),
+                    )
+                }
+            };
 
             let blend = AttachmentBlend {
                 src_color_blend_factor: BlendFactor::One,
@@ -1314,7 +1316,11 @@ impl Debug for EguiSystemError {
 
 // helper to retrieve Window from surface object
 fn surface_window(surface: &Surface) -> &Window {
-    surface.object().unwrap().downcast_ref::<Window>().unwrap()
+    match surface.object().unwrap() {
+        SurfaceObject::Window(_window) => todo!(),
+        SurfaceObject::Other(window) => window.downcast_ref::<Window>().unwrap(),
+        &_ => unreachable!(),
+    }
 }
 
 // bindful shaders:
