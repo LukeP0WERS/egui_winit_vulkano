@@ -60,7 +60,7 @@ use vulkano::{
     },
     render_pass::{Framebuffer, Subpass},
     shader::ShaderStages,
-    swapchain::{Surface, SurfaceObject, Swapchain},
+    swapchain::Swapchain,
     Validated, VulkanError,
 };
 use vulkano_taskgraph::{
@@ -148,7 +148,7 @@ pub struct EguiSystem {
     output_in_linear_colorspace: bool,
     pub egui_ctx: egui::Context,
     pub egui_winit: egui_winit::State,
-    surface: Arc<Surface>,
+    window: Arc<Window>,
 
     vertex_buffer_ids: Vec<Id<Buffer>>,
     index_buffer_ids: Vec<Id<Buffer>>,
@@ -177,7 +177,7 @@ impl EguiSystem {
     ///
     pub fn new(
         event_loop: &ActiveEventLoop,
-        surface: &Arc<Surface>,
+        window: &Arc<Window>,
         queue: &Arc<Queue>,
         resources: &Arc<Resources>,
         flight_id: Id<Flight>,
@@ -222,7 +222,7 @@ impl EguiSystem {
             egui_ctx.clone(),
             egui_ctx.viewport_id(),
             event_loop,
-            Some(surface_window(surface).scale_factor() as f32),
+            Some(window.scale_factor() as f32),
             Some(theme),
             Some(max_texture_side),
         );
@@ -320,7 +320,7 @@ impl EguiSystem {
 
             egui_ctx,
             egui_winit,
-            surface: surface.clone(),
+            window: window.clone(),
 
             staging_allocator: staging_allocator.map(|x| x.clone().as_dyn()),
             vertex_buffer_ids,
@@ -407,7 +407,7 @@ impl EguiSystem {
     ///
     /// Note that egui uses `tab` to move focus between elements, so this will always return `true` for tabs.
     pub fn update(&mut self, winit_event: &winit::event::WindowEvent) -> bool {
-        self.egui_winit.on_window_event(surface_window(&self.surface), winit_event).consumed
+        self.egui_winit.on_window_event(&self.window, winit_event).consumed
     }
 
     /// Begins Egui frame & runs the ui code for one frame.
@@ -424,7 +424,7 @@ impl EguiSystem {
     ///     full_output,
     /// );
     pub fn run_ui(&mut self, run_ui: impl FnMut(&mut egui::Ui)) -> egui::FullOutput {
-        let raw_input = self.egui_winit.take_egui_input(surface_window(&self.surface));
+        let raw_input = self.egui_winit.take_egui_input(&self.window);
         self.egui_ctx.run_ui(raw_input, run_ui)
     }
 
@@ -445,7 +445,7 @@ impl EguiSystem {
     /// );
     /// ```
     pub fn take_egui_input(&mut self) -> egui::RawInput {
-        self.egui_winit.take_egui_input(surface_window(&self.surface))
+        self.egui_winit.take_egui_input(&self.window)
     }
 
     /// Extracts the draw data for the frame, updates textures, and sends mesh primitive data required for rendering
@@ -891,7 +891,7 @@ impl EguiSystem {
 
     /// Returns the pixels per point of the window of this gui.
     fn pixels_per_point(&self) -> f32 {
-        egui_winit::pixels_per_point(&self.egui_ctx, surface_window(&self.surface))
+        egui_winit::pixels_per_point(&self.egui_ctx, &self.window)
     }
 
     fn extract_draw_data(
@@ -906,7 +906,7 @@ impl EguiSystem {
             viewport_output: _,
         } = full_output;
 
-        self.egui_winit.handle_platform_output(surface_window(&self.surface), platform_output);
+        self.egui_winit.handle_platform_output(&self.window, platform_output);
 
         let clipped_meshes = self.egui_ctx.tessellate(shapes, self.pixels_per_point());
 
@@ -1311,15 +1311,6 @@ impl Debug for EguiSystemError {
             Self::AllocateImageError(err) => err.fmt(f),
             Self::AllocateBufferError(err) => err.fmt(f),
         }
-    }
-}
-
-// helper to retrieve Window from surface object
-fn surface_window(surface: &Surface) -> &Window {
-    match surface.object().unwrap() {
-        SurfaceObject::Window(_window) => todo!(),
-        SurfaceObject::Other(window) => window.downcast_ref::<Window>().unwrap(),
-        &_ => unreachable!(),
     }
 }
 
