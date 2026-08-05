@@ -55,7 +55,7 @@ use vulkano::{
             viewport::{Scissor, Viewport, ViewportState},
             GraphicsPipelineCreateInfo,
         },
-        DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout,
+        DynamicState, GraphicsPipeline, PipelineBindPoint, PipelineLayout,
         PipelineShaderStageCreateInfo,
     },
     render_pass::{Framebuffer, Subpass},
@@ -1153,7 +1153,7 @@ impl<W: 'static + ?Sized> Task for RenderEguiTask<W> {
                             extent: [extent[0] as f32, extent[1] as f32],
                             ..Viewport::new()
                         }])?;
-                        builder.try_bind_pipeline_graphics(pipeline)?;
+                        builder.try_bind_pipeline(pipeline)?;
 
                         builder
                             .try_bind_index_buffer(index_buffer, 0, None, IndexType::U32)?
