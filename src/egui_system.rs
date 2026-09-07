@@ -64,11 +64,7 @@ use vulkano::{
     Validated, VulkanError,
 };
 use vulkano_taskgraph::{
-    command_buffer::{BufferImageCopy, CopyBufferToImageInfo, RecordingCommandBuffer},
-    descriptor_set::{SampledImageId, SamplerId},
-    graph::{AttachmentInfo, ExecutableTaskGraph, NodeId, TaskGraph},
-    resource::{AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources},
-    Id, QueueFamilyType, Task, TaskContext, TaskError, TaskResult,
+    Id, QueueFamilyType, Task, TaskContext, TaskError, TaskResult, command_buffer::{BufferImageCopy, CopyBufferToImageInfo, RecordingCommandBuffer}, descriptor_set::{SampledImageId, SamplerId}, graph::{AttachmentInfo, ExecutableTaskGraph, NodeId, ResourceMap, TaskGraph}, resource::{AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources},
 };
 use winit::{event_loop::ActiveEventLoop, raw_window_handle::HandleError, window::Window};
 
@@ -150,7 +146,9 @@ pub struct EguiSystem {
     pub egui_winit: egui_winit::State,
     window: Arc<Window>,
 
+    vertex_buffer_virtual_id: Id<Buffer>,
     vertex_buffer_ids: Vec<Id<Buffer>>,
+    index_buffer_virtual_id: Id<Buffer>,
     index_buffer_ids: Vec<Id<Buffer>>,
 
     font_sampler: Arc<Sampler>,
@@ -257,6 +255,7 @@ impl EguiSystem {
             Ok::<Vec<Id<Buffer>>, EguiSystemError>(buffer_ids)
         };
 
+        let vertex_buffer_virtual_id = Id::INVALID;
         let vertex_buffer_ids = create_buffer_ids(
             BufferCreateInfo { usage: BufferUsage::VERTEX_BUFFER, ..Default::default() },
             AllocationCreateInfo {
@@ -271,6 +270,7 @@ impl EguiSystem {
             .unwrap(),
         )?;
 
+        let index_buffer_virtual_id = Id::INVALID;
         let index_buffer_ids = create_buffer_ids(
             BufferCreateInfo { usage: BufferUsage::INDEX_BUFFER, ..Default::default() },
             AllocationCreateInfo {
@@ -323,7 +323,9 @@ impl EguiSystem {
             window: window.clone(),
 
             staging_allocator: staging_allocator.map(|x| x.clone().as_dyn()),
+            vertex_buffer_virtual_id,
             vertex_buffer_ids,
+            index_buffer_virtual_id,
             index_buffer_ids,
 
             font_sampler,
@@ -348,10 +350,11 @@ impl EguiSystem {
         virtual_framebuffer_id: Id<Framebuffer>,
         extract_fn: impl Fn(&W) -> &EguiSystem + 'static + Send + Sync,
     ) -> NodeId {
-        for (vertex_id, index_id) in self.vertex_buffer_ids.iter().zip(&self.index_buffer_ids) {
-            task_graph.add_host_buffer_access(*vertex_id, HostAccessType::Write);
-            task_graph.add_host_buffer_access(*index_id, HostAccessType::Write);
-        }
+        self.vertex_buffer_virtual_id = task_graph.add_buffer(&BufferCreateInfo::default());
+        self.index_buffer_virtual_id = task_graph.add_buffer(&BufferCreateInfo::default());
+
+        task_graph.add_host_buffer_access(self.vertex_buffer_virtual_id, HostAccessType::Write);
+        task_graph.add_host_buffer_access(self.index_buffer_virtual_id, HostAccessType::Write);
 
         // Initialize RenderEguiTask
         let mut task_node_builder = task_graph.create_task_node(
@@ -360,11 +363,9 @@ impl EguiSystem {
             RenderEguiTask::new(virtual_swapchain_id, Box::new(extract_fn)),
         );
 
-        for (vertex_id, index_id) in self.vertex_buffer_ids.iter().zip(&self.index_buffer_ids) {
-            task_node_builder
-                .buffer_access(*vertex_id, AccessTypes::VERTEX_ATTRIBUTE_READ)
-                .buffer_access(*index_id, AccessTypes::INDEX_READ);
-        }
+        task_node_builder
+            .buffer_access(self.vertex_buffer_virtual_id, AccessTypes::VERTEX_ATTRIBUTE_READ)
+            .buffer_access(self.index_buffer_virtual_id, AccessTypes::INDEX_READ);
 
         task_node_builder.framebuffer(virtual_framebuffer_id).color_attachment(
             virtual_swapchain_id.current_image_id(),
@@ -376,6 +377,24 @@ impl EguiSystem {
         self.egui_node_id = Some(node_id);
 
         node_id
+    }
+
+    /// This **must** be called each frame when constructing the [`ResourceMap`] for the taskgraph.
+    pub fn map_resources(&self, resource_map: &mut ResourceMap<'_>) {
+        let flight = self.resources.flight(self.flight_id);
+        let frame = flight.current_frame() as usize;
+
+        // map virtual vertex buffer id to this frame's physical id
+        resource_map.insert_buffer(
+            self.vertex_buffer_virtual_id,
+            self.vertex_buffer_ids[frame],
+        ).unwrap();
+
+        // map virtual index buffer id to this frame's physical id
+        resource_map.insert_buffer(
+            self.index_buffer_virtual_id,
+            self.index_buffer_ids[frame],
+        ).unwrap();
     }
 
     /// Creates the graphics pipeline for the task node, this **must** be called after taskgraph construction.
@@ -739,7 +758,7 @@ impl EguiSystem {
         };
 
         let flight = self.resources.flight(self.flight_id);
-        flight.wait(None).unwrap();
+        flight.wait(None).unwrap();// TODO: Remove this line.
 
         // SAFETY:
         // * The resources are not being accessed by any other task graph execution.
@@ -883,7 +902,7 @@ impl EguiSystem {
         if self.staging_allocator.is_some() {
             // Wait to ensure the staging allocator is reset.
             let flight = self.resources.flight(self.flight_id);
-            flight.wait(None).unwrap();
+            flight.wait(None).unwrap();// TODO: Remove this line.
         }
 
         Ok(())
@@ -947,9 +966,7 @@ impl EguiSystem {
         // Correct at time of writing, but assert in case that changes.
         assert!(VERTEX_ALIGN >= INDEX_ALIGN);
 
-        let frame = task_context.current_frame_index() as usize;
-
-        let vertex_buffer = self.vertex_buffer_ids[frame];
+        let vertex_buffer = self.vertex_buffer_virtual_id;
         let vertices = task_context
             .try_write_buffer::<[EpaintVertex]>(
                 vertex_buffer,
@@ -963,10 +980,10 @@ impl EguiSystem {
             .zip(meshes.clone().flat_map(|m| &m.vertices).copied())
             .for_each(|(into, from)| *into = from);
 
-        let index_buffer = self.index_buffer_ids[frame];
+        let index_buffer = self.index_buffer_virtual_id;
         let indices = task_context
             .try_write_buffer::<[Index]>(
-                self.index_buffer_ids[frame],
+                index_buffer,
                 0..(total_indices.min(self.config.max_indices) * size_of::<Index>()) as u64,
             )
             .map_err(|err| err.unwrap())?;
