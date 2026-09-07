@@ -125,25 +125,13 @@ pub enum EguiTexture {
     Bindless { sampled_image_id: SampledImageId, sampler_id: SamplerId },
 }
 
-/// Returned by [`EguiSystem::render_egui`], stores the [`NodeId`] of the task node and virtual ids of
-/// the vertex and index buffers. Must be passed to [`EguiSystem::map_resources`] when constructing the
-/// [`ResourceMap`] for the task graph each frame to ensure proper synchronization.
-#[derive(Clone)]
-pub struct RenderEguiState {
-    pub node_id: NodeId,
-    pub vertex_buffer_virtual_id: Id<Buffer>,
-    pub index_buffer_virtual_id: Id<Buffer>,
-}
-
 /// `EguiSystem` is a rendering backend for egui which is meant to contain it's state and provide a
-/// means of integrating egui with an existing taskgraph. There are four functions which must be called
+/// means of integrating egui with an existing taskgraph. There are three functions which must be called
 /// to properly fully initialize `EguiSystem` after it has been created:
 ///
 /// - [`render_egui`] This must be called during task graph construction, it creates a taskgraph node for rendering egui and
-/// returns it's [`NodeId`] and virtual buffer ids for synchronization.
-/// - [`map_resources`] This must be called each frame when constructing the [`ResourceMap`] for the taskgraph
-/// to ensure resources are synchronized properly.
-/// - [`create_task_pipeline`] This must be called after task graph construction and requires access to [`ExecutableTaskGraph`].
+/// returns it's NodeId for synchronization.
+/// - [`create_task_pipeline`] This must be called after task graph construction and requires access to `ExecutableTaskGraph`.
 /// - [`update_task_draw_data`] This should be called at the end every frame to update textures and mesh data.
 ///
 /// You need to use this with automatic render pass creation and it will render directly to the swapchain.
@@ -158,7 +146,9 @@ pub struct EguiSystem {
     pub egui_winit: egui_winit::State,
     window: Arc<Window>,
 
+    vertex_buffer_virtual_id: Id<Buffer>,
     vertex_buffer_ids: Vec<Id<Buffer>>,
+    index_buffer_virtual_id: Id<Buffer>,
     index_buffer_ids: Vec<Id<Buffer>>,
 
     font_sampler: Arc<Sampler>,
@@ -265,6 +255,7 @@ impl EguiSystem {
             Ok::<Vec<Id<Buffer>>, EguiSystemError>(buffer_ids)
         };
 
+        let vertex_buffer_virtual_id = Id::INVALID;
         let vertex_buffer_ids = create_buffer_ids(
             BufferCreateInfo { usage: BufferUsage::VERTEX_BUFFER, ..Default::default() },
             AllocationCreateInfo {
@@ -279,6 +270,7 @@ impl EguiSystem {
             .unwrap(),
         )?;
 
+        let index_buffer_virtual_id = Id::INVALID;
         let index_buffer_ids = create_buffer_ids(
             BufferCreateInfo { usage: BufferUsage::INDEX_BUFFER, ..Default::default() },
             AllocationCreateInfo {
@@ -331,7 +323,9 @@ impl EguiSystem {
             window: window.clone(),
 
             staging_allocator: staging_allocator.map(|x| x.clone().as_dyn()),
+            vertex_buffer_virtual_id,
             vertex_buffer_ids,
+            index_buffer_virtual_id,
             index_buffer_ids,
 
             font_sampler,
@@ -348,28 +342,19 @@ impl EguiSystem {
         })
     }
 
-    /// Creates [`RenderEguiTask`] and adds it to task graph for rendering.
-    /// 
-    /// This **must** be called during task graph construction for egui to render.
-    /// 
-    /// Returns [`RenderEguiState`] which contains the [`NodeId`] corresponding to the node 
-    /// added to task graph for rendering. You will need to manually add edges between this
-    /// task's [`NodeId`] and surrounding task node ids to enforce execution ordering.
-    /// 
-    /// The returned [`RenderEguiState`] must be passed as an input to [`EguiSystem::map_resources`]
-    /// when constructing the [`ResourceMap`] each frame.
+    /// Creates [`RenderEguiTask`] and adds it to task graph for rendering
     pub fn render_egui<W: 'static>(
         &mut self,
         task_graph: &mut TaskGraph<W>,
         virtual_swapchain_id: Id<Swapchain>,
         virtual_framebuffer_id: Id<Framebuffer>,
         extract_fn: impl Fn(&W) -> &EguiSystem + 'static + Send + Sync,
-    ) -> RenderEguiState {
-        let vertex_buffer_virtual_id = task_graph.add_buffer(&BufferCreateInfo::default());
-        let index_buffer_virtual_id = task_graph.add_buffer(&BufferCreateInfo::default());
+    ) -> NodeId {
+        self.vertex_buffer_virtual_id = task_graph.add_buffer(&BufferCreateInfo::default());
+        self.index_buffer_virtual_id = task_graph.add_buffer(&BufferCreateInfo::default());
 
-        task_graph.add_host_buffer_access(vertex_buffer_virtual_id, HostAccessType::Write);
-        task_graph.add_host_buffer_access(index_buffer_virtual_id, HostAccessType::Write);
+        task_graph.add_host_buffer_access(self.vertex_buffer_virtual_id, HostAccessType::Write);
+        task_graph.add_host_buffer_access(self.index_buffer_virtual_id, HostAccessType::Write);
 
         // Initialize RenderEguiTask
         let mut task_node_builder = task_graph.create_task_node(
@@ -379,8 +364,8 @@ impl EguiSystem {
         );
 
         task_node_builder
-            .buffer_access(vertex_buffer_virtual_id, AccessTypes::VERTEX_ATTRIBUTE_READ)
-            .buffer_access(index_buffer_virtual_id, AccessTypes::INDEX_READ);
+            .buffer_access(self.vertex_buffer_virtual_id, AccessTypes::VERTEX_ATTRIBUTE_READ)
+            .buffer_access(self.index_buffer_virtual_id, AccessTypes::INDEX_READ);
 
         task_node_builder.framebuffer(virtual_framebuffer_id).color_attachment(
             virtual_swapchain_id.current_image_id(),
@@ -391,29 +376,23 @@ impl EguiSystem {
         let node_id = task_node_builder.build();
         self.egui_node_id = Some(node_id);
 
-        RenderEguiState {
-            node_id,
-            vertex_buffer_virtual_id,
-            index_buffer_virtual_id,
-        }
+        node_id
     }
 
-    /// This **must** be called each frame when constructing the [`ResourceMap`] for the taskgraph
-    /// to ensure resources are synchronized properly. Requires the [`RenderEguiState`] returned
-    /// by [`EguiSystem::render_egui`] to be passed as an input.
-    pub fn map_resources(&self, resource_map: &mut ResourceMap<'_>, render_egui: &RenderEguiState) {
+    /// This **must** be called each frame when constructing the [`ResourceMap`] for the taskgraph.
+    pub fn map_resources(&self, resource_map: &mut ResourceMap<'_>) {
         let flight = self.resources.flight(self.flight_id);
-        let frame = flight.current_frame() as usize;
+        let frame = flight.current_frame_index() as usize;
 
         // map virtual vertex buffer id to this frame's physical id
         resource_map.insert_buffer(
-            render_egui.vertex_buffer_virtual_id,
+            self.vertex_buffer_virtual_id,
             self.vertex_buffer_ids[frame],
         ).unwrap();
 
         // map virtual index buffer id to this frame's physical id
         resource_map.insert_buffer(
-            render_egui.index_buffer_virtual_id,
+            self.index_buffer_virtual_id,
             self.index_buffer_ids[frame],
         ).unwrap();
     }
@@ -987,9 +966,7 @@ impl EguiSystem {
         // Correct at time of writing, but assert in case that changes.
         assert!(VERTEX_ALIGN >= INDEX_ALIGN);
 
-        let frame = task_context.current_frame_index() as usize;
-
-        let vertex_buffer = self.vertex_buffer_ids[frame];
+        let vertex_buffer = self.vertex_buffer_virtual_id;
         let vertices = task_context
             .try_write_buffer::<[EpaintVertex]>(
                 vertex_buffer,
@@ -1003,7 +980,7 @@ impl EguiSystem {
             .zip(meshes.clone().flat_map(|m| &m.vertices).copied())
             .for_each(|(into, from)| *into = from);
 
-        let index_buffer = self.index_buffer_ids[frame];
+        let index_buffer = self.index_buffer_virtual_id;
         let indices = task_context
             .try_write_buffer::<[Index]>(
                 index_buffer,
