@@ -128,6 +128,7 @@ pub enum EguiTexture {
 /// Returned by [`EguiSystem::render_egui`], stores the [`NodeId`] of the task node and virtual ids of
 /// the vertex and index buffers. Must be passed to [`EguiSystem::map_resources`] when constructing the
 /// [`ResourceMap`] for the task graph each frame to ensure proper synchronization.
+#[derive(Clone)]
 pub struct RenderEguiState {
     pub node_id: NodeId,
     pub vertex_buffer_virtual_id: Id<Buffer>,
