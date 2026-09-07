@@ -401,19 +401,19 @@ impl EguiSystem {
     /// This **must** be called each frame when constructing the [`ResourceMap`] for the taskgraph
     /// to ensure resources are synchronized properly. Requires the [`RenderEguiState`] returned
     /// by [`EguiSystem::render_egui`] to be passed as an input.
-    pub fn map_resources(&self, resource_map: &mut ResourceMap<'_>, buffers: RenderEguiState) {
+    pub fn map_resources(&self, resource_map: &mut ResourceMap<'_>, render_egui: &RenderEguiState) {
         let flight = self.resources.flight(self.flight_id);
         let frame = flight.current_frame_index() as usize;
 
         // map virtual vertex buffer id to this frame's physical id
         resource_map.insert_buffer(
-            buffers.vertex_buffer_virtual_id,
+            render_egui.vertex_buffer_virtual_id,
             self.vertex_buffer_ids[frame],
         ).unwrap();
 
         // map virtual index buffer id to this frame's physical id
         resource_map.insert_buffer(
-            buffers.index_buffer_virtual_id,
+            render_egui.index_buffer_virtual_id,
             self.index_buffer_ids[frame],
         ).unwrap();
     }
