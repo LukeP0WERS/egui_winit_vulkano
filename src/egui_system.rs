@@ -382,7 +382,7 @@ impl EguiSystem {
     /// This **must** be called each frame when constructing the [`ResourceMap`] for the taskgraph.
     pub fn map_resources(&self, resource_map: &mut ResourceMap<'_>) {
         let flight = self.resources.flight(self.flight_id);
-        let frame = flight.current_frame() as usize;
+        let frame = flight.current_frame_index() as usize;
 
         // map virtual vertex buffer id to this frame's physical id
         resource_map.insert_buffer(
