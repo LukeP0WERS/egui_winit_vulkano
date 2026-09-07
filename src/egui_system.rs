@@ -403,7 +403,7 @@ impl EguiSystem {
     /// by [`EguiSystem::render_egui`] to be passed as an input.
     pub fn map_resources(&self, resource_map: &mut ResourceMap<'_>, render_egui: &RenderEguiState) {
         let flight = self.resources.flight(self.flight_id);
-        let frame = flight.current_frame_index() as usize;
+        let frame = flight.current_frame() as usize;
 
         // map virtual vertex buffer id to this frame's physical id
         resource_map.insert_buffer(
