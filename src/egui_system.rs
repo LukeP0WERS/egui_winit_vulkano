@@ -987,8 +987,7 @@ impl EguiSystem {
         // Correct at time of writing, but assert in case that changes.
         assert!(VERTEX_ALIGN >= INDEX_ALIGN);
 
-        let flight = self.resources.flight(self.flight_id);
-        let frame = flight.current_frame_index() as usize;
+        let frame = task_context.current_frame_index() as usize;
 
         let vertex_buffer = self.vertex_buffer_ids[frame];
         let vertices = task_context
