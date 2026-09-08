@@ -126,13 +126,16 @@ pub enum EguiTexture {
 }
 
 /// `EguiSystem` is a rendering backend for egui which is meant to contain it's state and provide a
-/// means of integrating egui with an existing taskgraph. There are three functions which must be called
+/// means of integrating egui with an existing taskgraph. There are five :( functions which must be called
 /// to properly fully initialize `EguiSystem` after it has been created:
 ///
-/// - [`render_egui`] This must be called during task graph construction, it creates a taskgraph node for rendering egui and
-/// returns it's NodeId for synchronization.
-/// - [`create_task_pipeline`] This must be called after task graph construction and requires access to `ExecutableTaskGraph`.
-/// - [`update_task_draw_data`] This should be called at the end every frame to update textures and mesh data.
+/// - [`set_virtual`] This must be called when building a fresh [`TaskGraph`] before either of the [`render_egui`] or
+/// [`map_resources`] functions are called.
+/// - [`render_egui`] This creates a taskgraph node for rendering egui and returns it's [`NodeId`] for synchronization.
+/// - [`map_resources`] This must be called each frame when constructing the [`ResourceMap`] for the taskgraph.
+/// - [`create_task_pipeline`] This must be called after building task graph and requires access to [`ExecutableTaskGraph`].
+/// - [`update_task_draw_data`] This should be called each frame before task graph execution to update textures and mesh
+/// data.
 ///
 /// You need to use this with automatic render pass creation and it will render directly to the swapchain.
 pub struct EguiSystem {
@@ -342,7 +345,18 @@ impl EguiSystem {
         })
     }
 
-    /// Creates [`RenderEguiTask`] and adds it to task graph for rendering
+    /// This **must** be called when building a fresh [`TaskGraph`] before either of the
+    /// [`render_egui`] or [`map_resources`] functions are called.
+    pub fn set_virtual<W: 'static>(&mut self, task_graph: &mut TaskGraph<W>) {
+        self.vertex_buffer_virtual_id = task_graph.add_buffer(&BufferCreateInfo::default());
+        self.index_buffer_virtual_id = task_graph.add_buffer(&BufferCreateInfo::default());
+    }
+
+    /// Creates [`RenderEguiTask`] and adds it to task graph for rendering.
+    /// 
+    /// Returns the [`NodeId`] corresponding to the taskgraph node for rendering egui. You must
+    /// manually add edges between this node and surrounding nodes to enforce the order in which
+    /// nodes render.
     pub fn render_egui<W: 'static>(
         &mut self,
         task_graph: &mut TaskGraph<W>,
@@ -350,9 +364,6 @@ impl EguiSystem {
         virtual_framebuffer_id: Id<Framebuffer>,
         extract_fn: impl Fn(&W) -> &EguiSystem + 'static + Send + Sync,
     ) -> NodeId {
-        self.vertex_buffer_virtual_id = task_graph.add_buffer(&BufferCreateInfo::default());
-        self.index_buffer_virtual_id = task_graph.add_buffer(&BufferCreateInfo::default());
-
         task_graph.add_host_buffer_access(self.vertex_buffer_virtual_id, HostAccessType::Write);
         task_graph.add_host_buffer_access(self.index_buffer_virtual_id, HostAccessType::Write);
 
