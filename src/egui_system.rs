@@ -9,8 +9,8 @@
 
 use std::{fmt::Debug, marker::PhantomData, ops::Range, sync::Arc};
 
+use ahash::AHashMap;
 use egui::{
-    ahash::AHashMap,
     epaint::{Primitive, Vertex as EpaintVertex},
     ClippedPrimitive, FullOutput, Rect, TexturesDelta,
 };
