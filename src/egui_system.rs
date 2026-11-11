@@ -11,8 +11,7 @@ use std::{fmt::Debug, marker::PhantomData, ops::Range, sync::Arc};
 
 use ahash::AHashMap;
 use egui::{
-    epaint::{Primitive, Vertex as EpaintVertex},
-    ClippedPrimitive, FullOutput, Rect, TexturesDelta,
+    ClippedPrimitive, FullOutput, Rect, TexturesDelta, epaint::{Primitive, Vertex as EpaintVertex},
 };
 use vulkano::{
     buffer::{
@@ -487,7 +486,7 @@ impl EguiSystem {
     ) {
         let (clipped_meshes, textures_delta) = self.extract_draw_data(full_output);
 
-        self.update_textures(&textures_delta.set).unwrap();
+        self.update_textures(&textures_delta).unwrap();
 
         for &id in &textures_delta.free {
             self.unregister_image(id);
@@ -848,17 +847,17 @@ impl EguiSystem {
     }
 
     /// Write the entire texture delta for this frame.
-    fn update_textures(
+    fn update_textures<'a>(
         &mut self,
-        sets: &[(egui::TextureId, egui::epaint::ImageDelta)],
+        textures_delta: &TexturesDelta,
     ) -> Result<(), EguiSystemError> {
-        if sets.is_empty() {
+        if textures_delta.set.is_empty() {
             return Ok(());
         }
 
         // Allocate enough memory to upload every delta at once.
-        let total_size_bytes =
-            sets.iter().map(|(_, set)| self.image_size_bytes(set)).sum::<usize>() * 4;
+        let total_size_bytes = textures_delta.set
+            .iter().map(|(_, set)| self.image_size_bytes(&set[0])).sum::<usize>() * 4;
 
         let total_size_bytes = total_size_bytes as u64;
         let Ok(total_size_bytes) = vulkano::NonZeroDeviceSize::try_from(total_size_bytes) else {
@@ -889,14 +888,14 @@ impl EguiSystem {
         // Keep track of where to write the next image to into the staging buffer.
         let mut past_buffer_end = 0;
 
-        for (id, delta) in sets {
-            let image_size_bytes = self.image_size_bytes(delta) as u64;
+        for (id, delta) in &textures_delta.set {
+            let image_size_bytes = self.image_size_bytes(&delta[0]) as u64;
             let range = past_buffer_end..(past_buffer_end + image_size_bytes);
 
             // Bump for next loop
             past_buffer_end += image_size_bytes;
 
-            if let Some(err) = self.update_texture_within(*id, delta, buffer_id, range).err() {
+            if let Some(err) = self.update_texture_within(*id, &delta[0], buffer_id, range).err() {
                 panic!("Failed to create new image for id: {:?}, with error: {:?}", id, err);
             }
         }
