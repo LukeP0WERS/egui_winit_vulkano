@@ -484,11 +484,11 @@ impl EguiSystem {
         task_graph: &mut ExecutableTaskGraph<W>,
         full_output: FullOutput,
     ) {
-        let (clipped_meshes, textures_delta) = self.extract_draw_data(full_output);
+        let (clipped_meshes, mut textures_delta) = self.extract_draw_data(full_output);
 
-        self.update_textures(&textures_delta).unwrap();
+        self.update_textures(&mut textures_delta).unwrap();
 
-        for &id in &textures_delta.free {
+        for id in textures_delta.free.drain() {
             self.unregister_image(id);
         }
 
@@ -849,7 +849,7 @@ impl EguiSystem {
     /// Write the entire texture delta for this frame.
     fn update_textures<'a>(
         &mut self,
-        textures_delta: &TexturesDelta,
+        textures_delta: &mut TexturesDelta,
     ) -> Result<(), EguiSystemError> {
         if textures_delta.set.is_empty() {
             return Ok(());
@@ -888,14 +888,14 @@ impl EguiSystem {
         // Keep track of where to write the next image to into the staging buffer.
         let mut past_buffer_end = 0;
 
-        for (id, delta) in &textures_delta.set {
+        for (id, delta) in textures_delta.set.drain() {
             let image_size_bytes = self.image_size_bytes(&delta[0]) as u64;
             let range = past_buffer_end..(past_buffer_end + image_size_bytes);
 
             // Bump for next loop
             past_buffer_end += image_size_bytes;
 
-            if let Some(err) = self.update_texture_within(*id, &delta[0], buffer_id, range).err() {
+            if let Some(err) = self.update_texture_within(id, &delta[0], buffer_id, range).err() {
                 panic!("Failed to create new image for id: {:?}, with error: {:?}", id, err);
             }
         }
